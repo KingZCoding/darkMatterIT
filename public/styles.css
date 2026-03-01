@@ -349,3 +349,97 @@ textarea{min-height:110px; resize:vertical}
   .row{grid-template-columns:1fr}
   .brand{min-width:auto}
 }
+
+/* =========================================================
+   FIX: Native select dropdowns + option list on dark theme
+   ========================================================= */
+
+/* Helps browsers render native controls in dark mode */
+html { color-scheme: dark; }
+
+/* Make selects match your dark UI */
+select,
+option,
+optgroup {
+  font-family: inherit;
+}
+
+select {
+  background-color: rgba(14, 18, 28, 0.72);
+  color: rgba(240, 245, 255, 0.95);
+  border: 1px solid rgba(140, 155, 255, 0.28);
+  border-radius: 12px;
+  padding: 10px 12px;
+  outline: none;
+
+  /* Keep native arrow but make control consistent */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+
+  /* If your existing CSS already adds an arrow, this won't break it */
+}
+
+select:focus {
+  border-color: rgba(140, 155, 255, 0.65);
+  box-shadow: 0 0 0 4px rgba(120, 140, 255, 0.18);
+}
+
+/* The dropdown list (options) – browser support varies, but this fixes most */
+select option {
+  background-color: #0b0f17 !important;
+  color: rgba(240, 245, 255, 0.95) !important;
+}
+
+select option:checked {
+  background-color: rgba(96, 120, 255, 0.35) !important;
+  color: rgba(255, 255, 255, 0.98) !important;
+}
+
+/* Firefox uses this for the dropdown highlight */
+select:-moz-focusring {
+  color: transparent;
+  text-shadow: 0 0 0 rgba(240, 245, 255, 0.95);
+}
+
+
+/* =========================================================
+   FIX: Purple/teal horizontal “banding” background overlays
+   =========================================================
+   This assumes your site uses blurred glow layers/pseudo elements.
+   These rules force them to behave like a true background:
+   - fixed to viewport
+   - behind everything
+   - much lower opacity
+   - clipped
+   ========================================================= */
+
+body {
+  overflow-x: hidden; /* prevents glow layers from creating weird seams */
+}
+
+/* If you have any big background glow pseudo elements, normalize them */
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: -20vh -20vw;
+  z-index: -1;
+  pointer-events: none;
+  filter: blur(70px);
+  opacity: 0.18; /* reduce strength so it doesn't create bands */
+  transform: translateZ(0);
+}
+
+/* Two subtle glows: left (purple), right (teal) */
+body::before {
+  background:
+    radial-gradient(60% 60% at 20% 55%, rgba(128, 92, 255, 0.55), transparent 60%),
+    radial-gradient(45% 45% at 30% 20%, rgba(160, 120, 255, 0.35), transparent 70%);
+}
+
+body::after {
+  background:
+    radial-gradient(60% 60% at 80% 50%, rgba(0, 210, 255, 0.45), transparent 60%),
+    radial-gradient(45% 45% at 70% 25%, rgba(0, 255, 200, 0.25), transparent 70%);
+}
