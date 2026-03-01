@@ -1,7 +1,7 @@
 // --------- Edit these values ----------
 const BUSINESS_NAME = 'Dark Matter IT Solutions';
-const YOUR_NAME = 'YOUR NAME';
-const EMAIL = 'you@domain.com';
+const YOUR_NAME = 'Cody Traenkner';
+const EMAIL = 'ctraenk@darkmatterits.com';
 const PHONE_TEL = '+10000000000'; // tel: format (+1...)
 const PHONE_DISPLAY = '+1 (000) 000-0000';
 // --------------------------------------
@@ -54,13 +54,14 @@ document.querySelectorAll('[data-copy]').forEach((btn) => {
   });
 });
 
-// Contact form -> mailto (no backend required)
+// Contact form -> API (/api/support) with mailto fallback
+// Contact form -> API (/api/support) with mailto fallback
 const form = $('contactForm');
 const mailtoLink = $('mailtoLink');
 
 function buildMailto() {
   const name = $('name').value.trim();
-  const contactInfo = $('contactInfo').value.trim();
+  const email = $('contactEmail').value.trim();
   const service = $('service').value;
   const urgency = $('urgency').value;
   const message = $('message').value.trim();
@@ -70,7 +71,7 @@ function buildMailto() {
   );
   const bodyLines = [
     `Name: ${name}`,
-    `Preferred contact: ${contactInfo}`,
+    `Email: ${email}`,
     `Service: ${service}`,
     `Urgency: ${urgency}`,
     ``,
@@ -89,17 +90,51 @@ mailtoLink.addEventListener('click', (e) => {
   window.location.href = buildMailto();
 });
 
-form.addEventListener('submit', (e) => {
+form.addEventListener('submit', async (e) => {
   e.preventDefault();
 
   const name = $('name').value.trim();
-  const contactInfo = $('contactInfo').value.trim();
-  if (!name || !contactInfo) {
-    showToast('Please add your name and contact info.');
+  const email = $('contactEmail').value.trim();
+  const service = $('service').value;
+  const urgency = $('urgency').value;
+  const details = $('message').value.trim();
+
+  if (!name || name.length < 2) {
+    showToast('Please enter your name.');
+    return;
+  }
+  if (!email) {
+    showToast('Please enter your email.');
     return;
   }
 
-  window.location.href = buildMailto();
-  showToast('Opening your email app…');
-  form.reset();
+  try {
+    const payload = {
+      name,
+      email,
+      phone: '',
+      message:
+        `Business: ${BUSINESS_NAME}\n` +
+        `Service: ${service}\n` +
+        `Urgency: ${urgency}\n\n` +
+        `Details:\n${details || '(no additional details provided)'}`,
+    };
+
+    const res = await fetch('/api/support', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+
+    showToast('Sent! Check your email for confirmation.');
+    form.reset();
+  } catch (err) {
+    console.error(err);
+    showToast('Could not send — opening email app…');
+    window.location.href = buildMailto();
+    form.reset();
+  }
 });
