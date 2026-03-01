@@ -414,3 +414,45 @@ select:-moz-focusring{
   color: transparent;
   text-shadow: 0 0 0 rgba(240, 245, 255, 0.95);
 }
+
+/* =========================================================
+   Cleaner background transitions (keep gradients, reduce banding)
+   ========================================================= */
+
+/* Keep your current body background, but smooth it */
+body{
+  background:
+    radial-gradient(1100px 650px at 18% 12%, rgba(124,92,255,.18), transparent 62%),
+    radial-gradient(1050px 650px at 82% 8%, rgba(34,211,238,.14), transparent 60%),
+    radial-gradient(1200px 900px at 60% 112%, rgba(52,211,153,.10), transparent 62%),
+    linear-gradient(180deg, rgba(255,255,255,.015), rgba(0,0,0,0) 35%),
+    var(--bg);
+}
+
+/* Add a subtle vignette + grain to kill “bands” on some displays */
+body::before{
+  content:"";
+  position: fixed;
+  inset: 0;
+  pointer-events:none;
+  z-index: 0;
+  background:
+    radial-gradient(1200px 800px at 50% 0%, rgba(0,0,0,.35), transparent 60%),
+    radial-gradient(1200px 800px at 50% 110%, rgba(0,0,0,.45), transparent 60%),
+    /* lightweight grain */
+    repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,.018) 0px,
+      rgba(255,255,255,.018) 1px,
+      rgba(0,0,0,0) 3px,
+      rgba(0,0,0,0) 6px
+    );
+  mix-blend-mode: overlay;
+  opacity: .55;
+}
+
+/* Ensure content stays above the overlay */
+body > *{
+  position: relative;
+  z-index: 1;
+}
