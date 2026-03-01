@@ -128,3 +128,10 @@ If you need to add more details, reply to this email.
     return res.status(500).json({ error: 'Send failed' });
   }
 });
+
+// Business name used in customer confirmations
+const BUSINESS_NAME = "Dark Matter IT Solutions";
+
+app.listen(Number(PORT), "0.0.0.0", () => {
+  console.log(`darkmatter-mailer listening on :${PORT}`);
+});
