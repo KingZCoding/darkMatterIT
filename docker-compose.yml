@@ -1,0 +1,19 @@
+services:
+  darkmatter-site:
+    image: nginx:alpine
+    container_name: darkmatter-site
+    restart: unless-stopped
+    ports:
+      - "8085:80"
+    volumes:
+      - ./public:/usr/share/nginx/html:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - darkmatter-mailer
+
+  darkmatter-mailer:
+    build: ./mailer
+    container_name: darkmatter-mailer
+    restart: unless-stopped
+    env_file:
+      - ./mailer/.env

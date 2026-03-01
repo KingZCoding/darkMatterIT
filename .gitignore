@@ -1,0 +1,14 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Environment files
+.env
+mailer/.env
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
