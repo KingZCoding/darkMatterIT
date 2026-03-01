@@ -420,38 +420,46 @@ select:-moz-focusring{
    ========================================================= */
 
 /* Keep your current body background, but smooth it */
-body{
-  background:
-    radial-gradient(1100px 650px at 18% 12%, rgba(124,92,255,.18), transparent 62%),
-    radial-gradient(1050px 650px at 82% 8%, rgba(34,211,238,.14), transparent 60%),
-    radial-gradient(1200px 900px at 60% 112%, rgba(52,211,153,.10), transparent 62%),
-    linear-gradient(180deg, rgba(255,255,255,.015), rgba(0,0,0,0) 35%),
-    var(--bg);
-}
+/* =========================================================
+   REMOVE STRIPE GRAIN + USE CLEAN NOISE + VIGNETTE
+   (fixes visible horizontal/vertical lines)
+   ========================================================= */
 
-/* Add a subtle vignette + grain to kill “bands” on some displays */
+/* Replace the stripe-based overlay entirely */
 body::before{
   content:"";
   position: fixed;
   inset: 0;
-  pointer-events:none;
+  pointer-events: none;
   z-index: 0;
+
+  /* 1) Soft vignette (no banding) */
   background:
-    radial-gradient(1200px 800px at 50% 0%, rgba(0,0,0,.35), transparent 60%),
-    radial-gradient(1200px 800px at 50% 110%, rgba(0,0,0,.45), transparent 60%),
-    /* lightweight grain */
-    repeating-linear-gradient(
-      0deg,
-      rgba(255,255,255,.018) 0px,
-      rgba(255,255,255,.018) 1px,
-      rgba(0,0,0,0) 3px,
-      rgba(0,0,0,0) 6px
-    );
-  mix-blend-mode: overlay;
-  opacity: .55;
+    radial-gradient(1100px 700px at 50% -10%, rgba(0,0,0,.35), transparent 60%),
+    radial-gradient(1100px 700px at 50% 115%, rgba(0,0,0,.45), transparent 60%);
+
+  opacity: .70;
+  mix-blend-mode: normal;
 }
 
-/* Ensure content stays above the overlay */
+/* Add real-ish noise using an SVG turbulence filter (no stripes) */
+body::after{
+  content:"";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+
+  /* Inline SVG noise */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.22'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+
+  opacity: .14;           /* keep subtle */
+  mix-blend-mode: overlay;/* adds texture without lines */
+  transform: translateZ(0);
+}
+
+/* Make sure all page content stays above overlays */
 body > *{
   position: relative;
   z-index: 1;
