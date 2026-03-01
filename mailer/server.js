@@ -47,9 +47,7 @@ app.use(
 
 // Healthcheck
 app.get('/health', (_req, res) => res.json({ ok: true }));
-
-// Support request endpoint
-app.post('/api/support', async (req, res) => {
+app.post('/support', async (req, res) => {
   try {
     const name = String(req.body?.name ?? '').trim();
     const email = String(req.body?.email ?? '').trim();
