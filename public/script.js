@@ -1,3 +1,4 @@
+// public/script.js
 // --------- Edit these values ----------
 const BUSINESS_NAME = 'Dark Matter IT Solutions';
 const YOUR_NAME = 'Cody Traenkner';
@@ -11,34 +12,65 @@ function $(id) {
 }
 
 // Year
-$('year').textContent = new Date().getFullYear();
+const yearEl = $('year');
+if (yearEl) yearEl.textContent = new Date().getFullYear();
 
-// Name in hero card
-$('yourName').textContent = YOUR_NAME;
+// Name in hero card (optional element)
+const yourNameEl = $('yourName');
+if (yourNameEl) yourNameEl.textContent = YOUR_NAME;
 
-// Update contact links
+// Update contact links (top card)
 const emailLink = $('emailLink');
-emailLink.textContent = EMAIL;
-emailLink.href = `mailto:${EMAIL}`;
+if (emailLink) {
+  emailLink.textContent = EMAIL;
+  emailLink.href = `mailto:${EMAIL}`;
+}
 
 const phoneLink = $('phoneLink');
-phoneLink.textContent = PHONE_DISPLAY;
-phoneLink.href = `tel:${PHONE_TEL}`;
+if (phoneLink) {
+  phoneLink.textContent = PHONE_DISPLAY;
+  phoneLink.href = `tel:${PHONE_TEL}`;
+}
 
-// Logo fallback if image missing
+// Update contact links (contact section)
+const emailLink2 = $('emailLink2');
+if (emailLink2) {
+  emailLink2.textContent = EMAIL;
+  emailLink2.href = `mailto:${EMAIL}`;
+}
+
+const phoneLink2 = $('phoneLink2');
+if (phoneLink2) {
+  phoneLink2.textContent = PHONE_DISPLAY;
+  phoneLink2.href = `tel:${PHONE_TEL}`;
+}
+
+// Logo fallback if image missing (optional element)
 const logoImg = $('logoImg');
-logoImg.addEventListener('error', () => {
-  logoImg.style.display = 'none';
-});
+if (logoImg) {
+  logoImg.addEventListener('error', () => {
+    logoImg.style.display = 'none';
+  });
+}
 
 // Toast
 const toast = $('toast');
 let toastTimer = null;
-function showToast(msg) {
+
+/**
+ * Show a toast message.
+ * Requires: <div class="toast" id="toast"></div>
+ * Optional: add CSS for `.toast.bad` for error styling.
+ */
+function showToast(msg, isError = false) {
+  if (!toast) return;
+
   toast.textContent = msg;
+  toast.classList.toggle('bad', isError);
   toast.classList.add('show');
+
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 3200);
 }
 
 // Copy buttons
@@ -49,64 +81,42 @@ document.querySelectorAll('[data-copy]').forEach((btn) => {
       await navigator.clipboard.writeText(val);
       showToast('Copied to clipboard');
     } catch {
-      showToast('Copy failed — copy manually');
+      showToast('Copy failed — copy manually', true);
     }
   });
 });
 
-// Contact form -> API (/api/support) with mailto fallback
-// Contact form -> API (/api/support) with mailto fallback
+// Support form (email only) -> backend API
 const form = $('contactForm');
-const mailtoLink = $('mailtoLink');
 
-function buildMailto() {
-  const name = $('name').value.trim();
-  const email = $('contactEmail').value.trim();
-  const service = $('service').value;
-  const urgency = $('urgency').value;
-  const message = $('message').value.trim();
-
-  const subject = encodeURIComponent(
-    `[${BUSINESS_NAME}] Support Request — ${service} (${urgency})`,
-  );
-  const bodyLines = [
-    `Name: ${name}`,
-    `Email: ${email}`,
-    `Service: ${service}`,
-    `Urgency: ${urgency}`,
-    ``,
-    `Details:`,
-    message || '(no additional details provided)',
-    ``,
-    `— Sent from ${BUSINESS_NAME} landing page`,
-  ];
-
-  const body = encodeURIComponent(bodyLines.join('\n'));
-  return `mailto:${EMAIL}?subject=${subject}&body=${body}`;
+function isEmail(v) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
 
-mailtoLink.addEventListener('click', (e) => {
-  e.preventDefault();
-  window.location.href = buildMailto();
-});
-
-form.addEventListener('submit', async (e) => {
+form?.addEventListener('submit', async (e) => {
   e.preventDefault();
 
-  const name = $('name').value.trim();
-  const email = $('contactEmail').value.trim();
-  const service = $('service').value;
-  const urgency = $('urgency').value;
-  const details = $('message').value.trim();
+  const name = ($('name')?.value || '').trim();
+  const email = ($('contactEmail')?.value || '').trim();
+  const service = ($('service')?.value || '').trim();
+  const urgency = ($('urgency')?.value || '').trim();
+  const details = ($('message')?.value || '').trim();
 
-  if (!name || name.length < 2) {
-    showToast('Please enter your name.');
+  if (name.length < 2) {
+    showToast('Please enter your name.', true);
     return;
   }
-  if (!email) {
-    showToast('Please enter your email.');
+  if (!isEmail(email)) {
+    showToast('Please enter a valid email address.', true);
     return;
   }
+  if (details.length < 5) {
+    showToast('Please include a short message.', true);
+    return;
+  }
+
+  const submitBtn = form.querySelector('button[type="submit"]');
+  if (submitBtn) submitBtn.disabled = true;
 
   try {
     const payload = {
@@ -115,9 +125,9 @@ form.addEventListener('submit', async (e) => {
       phone: '',
       message:
         `Business: ${BUSINESS_NAME}\n` +
-        `Service: ${service}\n` +
-        `Urgency: ${urgency}\n\n` +
-        `Details:\n${details || '(no additional details provided)'}`,
+        `Service: ${service || 'N/A'}\n` +
+        `Urgency: ${urgency || 'Normal'}\n\n` +
+        `Details:\n${details}`,
     };
 
     const res = await fetch('/api/support', {
@@ -127,14 +137,15 @@ form.addEventListener('submit', async (e) => {
     });
 
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Request failed');
+    if (!res.ok)
+      throw new Error(data.error || `Request failed (${res.status})`);
 
-    showToast('Sent! Check your email for confirmation.');
+    showToast('Request sent! We’ll respond ASAP.');
     form.reset();
   } catch (err) {
     console.error(err);
-    showToast('Could not send — opening email app…');
-    window.location.href = buildMailto();
-    form.reset();
+    showToast('Could not send. Please try again.', true);
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
   }
 });
