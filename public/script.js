@@ -3,8 +3,8 @@
 const BUSINESS_NAME = 'Dark Matter IT Solutions';
 const YOUR_NAME = 'Cody Traenkner';
 const EMAIL = 'ctraenk@darkmatterits.com';
-const PHONE_TEL = '+10000000000'; // tel: format (+1...)
-const PHONE_DISPLAY = '+1 (000) 000-0000';
+const PHONE_TEL = '+18562090353'; // tel: format (+1...)
+const PHONE_DISPLAY = '+1 (856) 209-0353';
 // --------------------------------------
 
 function $(id) {
