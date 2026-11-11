@@ -72,7 +72,8 @@ if [ -n "$bad" ]; then
   for s in $bad; do "${COMPOSE[@]}" logs --tail 40 "$s"; done
   exit 1
 fi
-if ! curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/ \n   || ! curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/api/health; then
+if ! curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/ \
+   || ! curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/api/health; then
   echo "::error::Site or mailer did not answer on 10.50.0.3:8085 after deploy"; exit 1
 fi
 
