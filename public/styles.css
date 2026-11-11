@@ -472,3 +472,6 @@ body > *{
 .faq-item summary::after{content:'＋';font-size:1.1rem;opacity:.6;flex-shrink:0}
 .faq-item[open] summary::after{content:'－'}
 .faq-item p{padding:0 20px 16px;margin:0;opacity:.8;line-height:1.6}
+
+/* Honeypot field: off-screen for people, still filled in by bots */
+.hp{position:absolute; left:-10000px; top:auto; width:1px; height:1px; overflow:hidden;}

@@ -89,9 +89,21 @@ document.querySelectorAll('[data-copy]').forEach((btn) => {
 // Support form (email only) -> backend API
 const form = $('contactForm');
 
+// Same rule as the server: a plain address, no spaces, commas, quotes or angle brackets.
 function isEmail(v) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  return /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(v);
 }
+
+const charCount = (s) => [...s].length;
+
+// Messages for each server error code. Nothing from the server is shown as-is.
+const ERROR_TEXT = {
+  invalid_name: 'Please enter your name (2–120 characters).',
+  invalid_email: 'Please enter a valid email address.',
+  invalid_message: 'Please write a message of 10–4000 characters.',
+  rate_limited: `Too many requests. Please wait a few minutes, or email ${EMAIL}.`,
+  busy: `We're receiving a lot of requests. Please email ${EMAIL} or call ${PHONE_DISPLAY}.`,
+};
 
 form?.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -100,18 +112,17 @@ form?.addEventListener('submit', async (e) => {
   const email = ($('contactEmail')?.value || '').trim();
   const service = ($('service')?.value || '').trim();
   const urgency = ($('urgency')?.value || '').trim();
-  const details = ($('message')?.value || '').trim();
+  const message = ($('message')?.value || '').trim();
+  const website = $('website')?.value || ''; // honeypot, stays empty for people
 
-  if (name.length < 2) {
-    showToast('Please enter your name.', true);
-    return;
-  }
-  if (!isEmail(email)) {
-    showToast('Please enter a valid email address.', true);
-    return;
-  }
-  if (details.length < 5) {
-    showToast('Please include a short message.', true);
+  const fieldError =
+    charCount(name) < 2 || charCount(name) > 120 ? ['name', ERROR_TEXT.invalid_name]
+    : !isEmail(email) || email.length > 200 ? ['contactEmail', ERROR_TEXT.invalid_email]
+    : charCount(message) < 10 || charCount(message) > 4000 ? ['message', ERROR_TEXT.invalid_message]
+    : null;
+  if (fieldError) {
+    showToast(fieldError[1], true);
+    $(fieldError[0])?.focus();
     return;
   }
 
@@ -119,32 +130,23 @@ form?.addEventListener('submit', async (e) => {
   if (submitBtn) submitBtn.disabled = true;
 
   try {
-    const payload = {
-      name,
-      email,
-      phone: '',
-      message:
-        `Business: ${BUSINESS_NAME}\n` +
-        `Service: ${service || 'N/A'}\n` +
-        `Urgency: ${urgency || 'Normal'}\n\n` +
-        `Details:\n${details}`,
-    };
-
     const res = await fetch('/api/support', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ name, email, phone: '', service, urgency, message, website }),
     });
 
     const data = await res.json().catch(() => ({}));
-    if (!res.ok)
-      throw new Error(data.error || `Request failed (${res.status})`);
+    if (!res.ok) {
+      const code = res.status === 429 ? 'rate_limited' : data.error;
+      showToast(ERROR_TEXT[code] || `Could not send. Please email ${EMAIL} or call ${PHONE_DISPLAY}.`, true);
+      return;
+    }
 
     showToast('Request sent! We’ll respond ASAP.');
     form.reset();
-  } catch (err) {
-    console.error(err);
-    showToast('Could not send. Please try again.', true);
+  } catch {
+    showToast(`Could not send. Please email ${EMAIL} or call ${PHONE_DISPLAY}.`, true);
   } finally {
     if (submitBtn) submitBtn.disabled = false;
   }

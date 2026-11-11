@@ -12,3 +12,10 @@ mailer/.env
 # OS
 .DS_Store
 Thumbs.db
+
+# Secrets and keys
+.env.*
+!.env.example
+*.pem
+*.key
+id_*

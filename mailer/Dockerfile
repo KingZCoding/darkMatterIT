@@ -1,11 +1,15 @@
-FROM node:20-alpine
+FROM node:24-alpine
 
+ENV NODE_ENV=production
 WORKDIR /app
 
-COPY package.json /app/package.json
-RUN npm install --omit=dev
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
-COPY server.js /app/server.js
+COPY app.js server.js ./
 
+USER node
 EXPOSE 3000
-CMD ["npm", "start"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:3000/health >/dev/null || exit 1
+CMD ["node", "server.js"]

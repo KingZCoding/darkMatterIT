@@ -52,12 +52,18 @@ if [ -n "$(find "$DEST" -path "$DEST/.git" -prune -o -type l -print -quit)" ]; t
 fi
 
 echo "== Rebuild and restart"
-# --force-recreate: the site nginx resolves darkmatter-mailer only at startup, so it must
-# restart whenever the mailer gets a new container (and IP).
+# --force-recreate: the site's nginx config and web root are bind mounts, and rsync replaces
+# files (new inodes), so the site container must be recreated to see them.
 "${COMPOSE[@]}" up -d --build --force-recreate --remove-orphans
 
 echo "== Health check"
-sleep 15
+# Wait up to 90 s for the mailer's Docker healthcheck, then check nothing exited or restarted
+# and that the site answers. (/api/health is not public, so the mailer is checked via Docker.)
+mailer_id=$("${COMPOSE[@]}" ps -q darkmatter-mailer)
+for _ in $(seq 1 18); do
+  [ "$(docker inspect -f '{{.State.Health.Status}}' "$mailer_id" 2>/dev/null)" = healthy ] && break
+  sleep 5
+done
 "${COMPOSE[@]}" ps
 bad=$("${COMPOSE[@]}" ps --status exited --status restarting --services)
 # A container that restarted since the deploy is crash-looping even if it shows as up.
@@ -66,15 +72,15 @@ for id in $("${COMPOSE[@]}" ps -q); do
     bad="$bad $(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$id")"
   fi
 done
+[ "$(docker inspect -f '{{.State.Health.Status}}' "$mailer_id" 2>/dev/null)" = healthy ] || bad="$bad darkmatter-mailer(unhealthy)"
 bad=$(echo $bad)
 if [ -n "$bad" ]; then
   echo "::error::Not running after deploy: $bad"
-  for s in $bad; do "${COMPOSE[@]}" logs --tail 40 "$s"; done
+  for s in darkmatter-site darkmatter-mailer; do "${COMPOSE[@]}" logs --tail 40 "$s"; done
   exit 1
 fi
-if ! curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/ \
-   || ! curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/api/health; then
-  echo "::error::Site or mailer did not answer on 10.50.0.3:8085 after deploy"; exit 1
+if ! curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/; then
+  echo "::error::Site did not answer on 10.50.0.3:8085 after deploy"; exit 1
 fi
 
 echo "== Clean up old images"

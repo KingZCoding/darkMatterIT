@@ -6,19 +6,20 @@
 browser ──HTTPS──▶ VPS nginx (TLS, security headers, CSP)
                      │  /etc/nginx/sites-enabled/darkmatterit.conf
                      ▼  WireGuard
-                   Pi 10.50.0.3:8085 ── darkmatter-site (nginx:alpine, serves public/)
-                                          └── /api/ ──▶ darkmatter-mailer (Node, port 3000, internal only)
+                   Pi 10.50.0.3:8085 ── darkmatter-site (nginx-unprivileged, serves public/)
+                                          └── /api/support only ──▶ darkmatter-mailer (Node, port 3000, internal only)
 ```
 
 On the Pi the project lives in `/data/sites/newsite` (compose project name `newsite`).
 The mailer's settings are in `/data/sites/newsite/mailer/.env` on the Pi only; it is never committed
-and the deploy never overwrites it. Variables: `SUPPORT_TO`, `FROM_EMAIL`, `SMTP_USER`, `SMTP_PASS`, optional `PORT`.
+and the deploy never overwrites it. Variables are listed in `mailer/.env.example`: `SUPPORT_TO`, `FROM_EMAIL`, `SMTP_USER`, `SMTP_PASS`,
+optional `PORT`, `SMTP_HOST`, `SMTP_PORT`, `SUPPORT_DAILY_CAP` (100), `CONFIRM_DAILY_CAP` (50).
 
 ## How a deploy happens
 
 Push (or merge) to `main` → `.github/workflows/deploy.yml`:
 
-1. **check** (GitHub-hosted): `node --check` on the mailer, `docker compose config`, `nginx -t` on the repo's nginx config.
+1. **check** (GitHub-hosted, every branch): mailer tests (`npm test`), JS syntax, no scripts/dotfiles in `public/`, `docker compose config`, `nginx -t`.
 2. **deploy** (self-hosted runner on the Pi, labels `self-hosted, pi, darkmatterits`): runs
    `sudo -n /usr/local/sbin/deploy-darkmatterits "$GITHUB_WORKSPACE"`.
 
@@ -28,12 +29,12 @@ The runner user (`ghrunner`) has no Docker access and no general sudo. The one r
   (no privileged containers, host namespaces, docker socket, host paths, or ports on all interfaces —
   published ports must be on `10.50.0.3` or loopback);
 - rsyncs the code into `/data/sites/newsite` (keeps `.git` and `mailer/.env`), runs `docker compose up -d --build`,
-  health-checks that nothing exited or restarted, and prunes old images.
+  waits for the mailer's Docker healthcheck, checks nothing exited or restarted and the site answers, and prunes old images.
 
 Server pieces (installed on the Pi by `deploy/pi/install.sh`; the helper's source is `deploy/pi/deploy-darkmatterits`):
 - `/usr/local/sbin/deploy-darkmatterits` — the helper
 - `/etc/sudoers.d/ghrunner-deploy-darkmatterits` — lets `ghrunner` run only that helper
-- `/opt/actions-runner-darkmatterit` + `actions.runner.KingZCoding-darkMatterIT.*.service` — the runner for this repo
+- `/opt/actions-runner-darkmatterit` + `actions.runner.*.DarkMatterIT-site.service` — the runner for this repo
   (the existing `/opt/actions-runner` belongs to ghostlightsocial; GitHub runners are per repo)
 
 ## One-time Pi setup

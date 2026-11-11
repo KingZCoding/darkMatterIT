@@ -22,6 +22,28 @@ for b in rsync flock curl docker; do command -v "$b" >/dev/null || { echo "missi
 [ -x /usr/local/sbin/compose-guard ] || { echo "missing /usr/local/sbin/compose-guard" >&2; exit 1; }
 [ -f /data/sites/newsite/mailer/.env ] || { echo "missing /data/sites/newsite/mailer/.env" >&2; exit 1; }
 
+# secwatch watches /usr/local/sbin, sudoers and systemd units. Pause it so this install doesn't
+# send a tamper alert, and always start it again (rebaselined on success) when the script exits.
+SECWATCH_PAUSED=0
+resume_secwatch() {
+  status=$?
+  if [ "$SECWATCH_PAUSED" = 1 ]; then
+    if [ "$status" = 0 ]; then
+      echo "== Rebaseline secwatch"
+      python3 -I /usr/local/sbin/secwatch.py --rebaseline
+    else
+      echo "!! install failed (exit $status); secwatch NOT rebaselined, so it will report what changed" >&2
+    fi
+    systemctl start secwatch.timer
+  fi
+}
+trap resume_secwatch EXIT
+if systemctl is-active --quiet secwatch.timer; then
+  echo "== Pause secwatch"
+  systemctl stop secwatch.timer
+  SECWATCH_PAUSED=1
+fi
+
 echo "== Install deploy helper"
 bash -n "$HELPER_SRC"
 install -m 750 -o root -g root "$HELPER_SRC" /usr/local/sbin/deploy-darkmatterits
@@ -52,5 +74,8 @@ cd "$RUNNER_DIR"
 ./svc.sh start || true
 ./svc.sh status | head -5
 
+systemctl list-units --type=service --state=active --no-legend 'actions.runner.*.DarkMatterIT-site.service' | grep -q . \
+  || { echo "runner service is not active" >&2; exit 1; }
+
 rm -f "$HELPER_SRC" "$0"
-echo "== Done. Push to main (or run the workflow) to deploy."
+echo "== Done. Merge to main (or run the workflow on main) to deploy."

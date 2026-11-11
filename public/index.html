@@ -249,11 +249,11 @@
           <div class="panel">
             <h3>Request Support</h3>
 
-            <form id="contactForm">
+            <form id="contactForm" method="post" novalidate>
               <div class="row">
                 <div class="field">
                   <label for="name">Name</label>
-                  <input id="name" name="name" autocomplete="name" placeholder="Your name" required />
+                  <input id="name" name="name" autocomplete="name" placeholder="Your name" required minlength="2" maxlength="120" />
                 </div>
                 <div class="field">
                   <label for="contactEmail">Email</label>
@@ -264,6 +264,7 @@
                       autocomplete="email"
                       placeholder="you@email.com"
                       required
+                      maxlength="200"
                     />
                 </div>
               </div>
@@ -293,7 +294,12 @@
 
               <div class="field">
                 <label for="message">Message</label>
-                <textarea id="message" name="message" placeholder="What do you need help with?"></textarea>
+                <textarea id="message" name="message" placeholder="What do you need help with?" required minlength="10" maxlength="4000"></textarea>
+              </div>
+
+              <div class="hp" aria-hidden="true">
+                <label for="website">Leave this field empty</label>
+                <input id="website" name="website" type="text" tabindex="-1" autocomplete="off" />
               </div>
 
               <div class="form-actions">
@@ -301,6 +307,9 @@
                 <span class="micro">Fast response during business hours.</span>
               </div>
             </form>
+            <noscript>
+              <p class="micro">The form needs JavaScript. Email <a href="mailto:ctraenk@darkmatterits.com">ctraenk@darkmatterits.com</a> or call <a href="tel:+18562090353">+1 (856) 209-0353</a> instead.</p>
+            </noscript>
           </div>
         </div>
       </div>

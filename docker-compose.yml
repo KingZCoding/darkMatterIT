@@ -1,15 +1,33 @@
+# darkmatterits.com on the Pi (/data/sites/newsite, compose project "newsite").
+# Deployed by deploy/pi/deploy-darkmatterits, which checks this file with compose-guard:
+# published ports must be on 10.50.0.3 (WireGuard) or loopback, no host paths outside the project.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   darkmatter-site:
-    image: nginx:alpine
+    image: nginxinc/nginx-unprivileged:1.27-alpine
     container_name: darkmatter-site
     restart: unless-stopped
     ports:
-      - "10.50.0.3:8085:80"
+      - "10.50.0.3:8085:8080"
     volumes:
       - ./public:/usr/share/nginx/html:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       - darkmatter-mailer
+    logging: *logging
 
   darkmatter-mailer:
     build: ./mailer
@@ -17,3 +35,13 @@ services:
     restart: unless-stopped
     env_file:
       - ./mailer/.env
+    environment:
+      NODE_ENV: production
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
