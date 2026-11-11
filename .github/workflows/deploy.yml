@@ -1,18 +1,58 @@
-name: Deploy
+# Every push to main: check the site on GitHub, then (only if that passes) deploy on the Pi.
+# The Pi runs a self-hosted runner that connects OUT to GitHub, so no ports are opened at home
+# and no SSH keys or server secrets live in GitHub. The mailer's SMTP settings stay in
+# mailer/.env on the Pi. See DEPLOY.md.
+#
+# This repo is public. There is deliberately no pull_request trigger, and the repo is set to
+# require approval before workflows from outside contributors run, so a fork PR cannot get
+# a job onto the Pi runner.
+
+name: check-and-deploy
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-darkmatterits
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
-  deploy:
+  check:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Deploy via VPS → Gateway → Worker
-        uses: appleboy/ssh-action@v1.0.3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: ssh gateway "ssh worker 'cd /data/sites/newsite/public && ./deploy.sh'"
+          node-version: 20
+      - name: Mailer syntax check
+        run: node --check mailer/server.js
+      - name: Site files present
+        run: test -s public/index.html && test -s public/script.js && test -s public/styles.css
+      - name: Compose file check
+        run: |
+          touch mailer/.env
+          docker compose -f docker-compose.yml config -q
+      - name: nginx config check
+        run: |
+          docker run --rm --add-host darkmatter-mailer:127.0.0.1 \
+            -v "$PWD/nginx/conf.d:/etc/nginx/conf.d:ro" \
+            -v "$PWD/public:/usr/share/nginx/html:ro" \
+            nginx:alpine nginx -t
+
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, pi, darkmatterits]
+    steps:
+      - uses: actions/checkout@v4
+      # The runner user on the Pi has no Docker access and no general sudo.
+      # It may run only this root-owned script, which stages the checkout, checks the
+      # compose file with compose-guard, copies it into /data/sites/newsite (keeping
+      # mailer/.env), rebuilds and health-checks. See DEPLOY.md.
+      - name: Deploy on the Pi (copy, rebuild, health check)
+        run: sudo -n /usr/local/sbin/deploy-darkmatterits "$GITHUB_WORKSPACE"

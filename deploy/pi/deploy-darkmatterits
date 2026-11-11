@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Deploy darkmatterits.com from the GitHub runner's checkout.
+# The runner user (ghrunner) has no docker access and no sudo except this one
+# script (see /etc/sudoers.d/ghrunner-deploy-darkmatterits).
+#
+# Whoever can push to main controls the compose file, and Docker runs it as
+# root, so before anything is built:
+#   1. the checkout is copied into a root-only staging folder (ghrunner can't
+#      change it after the check), and refused if it contains symlinks;
+#   2. only docker-compose.yml is used (explicit -f, so no compose.yaml or
+#      override file can sneak in);
+#   3. the resolved config is checked by compose-guard (no privileged, host
+#      namespaces, capabilities, devices, docker socket, host paths, ports on
+#      all interfaces, outside build contexts...).
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 022
+
+SRC_ROOT=/opt/actions-runner-darkmatterit/_work
+DEST=/data/sites/newsite
+STAGE=/var/lib/deploy-darkmatterits/stage
+COMPOSE=(docker compose --project-directory "$DEST" --project-name newsite -f "$DEST/docker-compose.yml")
+
+[ $# -eq 1 ] || { echo "usage: deploy-darkmatterits <checkout dir>" >&2; exit 2; }
+src=$(realpath -e -- "$1")
+case "$src/" in
+  "$SRC_ROOT"/*) ;;
+  *) echo "refusing: $src is not inside $SRC_ROOT" >&2; exit 2 ;;
+esac
+[ -f "$DEST/mailer/.env" ] || { echo "::error::No mailer/.env in $DEST. Create it once by hand (see DEPLOY.md)." >&2; exit 1; }
+
+exec 9>/run/deploy-darkmatterits.lock
+flock 9
+
+echo "== Stage the checkout (root-only copy)"
+install -d -m 700 -o root -g root /var/lib/deploy-darkmatterits
+rm -rf "$STAGE"
+rsync -a --no-links --exclude .git --exclude .env -- "$src/" "$STAGE/"
+if [ -n "$(find "$src" -path "$src/.git" -prune -o -type l -print -quit)" ]; then
+  echo "::error::The checkout contains symlinks; refusing to deploy." >&2; exit 1
+fi
+[ -f "$STAGE/docker-compose.yml" ] || { echo "::error::No docker-compose.yml in the checkout" >&2; exit 1; }
+
+echo "== Check the compose file is safe to run as root"
+docker compose --project-directory "$DEST" --project-name newsite -f "$STAGE/docker-compose.yml" \
+  config --format json | compose-guard "$DEST" "$STAGE/docker-compose.yml"
+
+echo "== Copy code into $DEST (keeps .git and mailer/.env)"
+rsync -a --delete --no-links --exclude .git --exclude .env --chown=admin:admin -- "$STAGE/" "$DEST/"
+if [ -n "$(find "$DEST" -path "$DEST/.git" -prune -o -type l -print -quit)" ]; then
+  echo "::error::Symlink found in $DEST after copy; refusing to build." >&2; exit 1
+fi
+
+echo "== Rebuild and restart"
+# --force-recreate: the site nginx resolves darkmatter-mailer only at startup, so it must
+# restart whenever the mailer gets a new container (and IP).
+"${COMPOSE[@]}" up -d --build --force-recreate --remove-orphans
+
+echo "== Health check"
+sleep 15
+"${COMPOSE[@]}" ps
+bad=$("${COMPOSE[@]}" ps --status exited --status restarting --services)
+# A container that restarted since the deploy is crash-looping even if it shows as up.
+for id in $("${COMPOSE[@]}" ps -q); do
+  if [ "$(docker inspect -f '{{.RestartCount}}' "$id")" != "0" ]; then
+    bad="$bad $(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$id")"
+  fi
+done
+bad=$(echo $bad)
+if [ -n "$bad" ]; then
+  echo "::error::Not running after deploy: $bad"
+  for s in $bad; do "${COMPOSE[@]}" logs --tail 40 "$s"; done
+  exit 1
+fi
+if ! curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/ \n   || ! curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/api/health; then
+  echo "::error::Site or mailer did not answer on 10.50.0.3:8085 after deploy"; exit 1
+fi
+
+echo "== Clean up old images"
+docker image prune -f
+logger -t deploy-darkmatterits "deployed from $src"
