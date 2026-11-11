@@ -1,88 +1,131 @@
 #!/usr/bin/env bash
-# Deploy darkmatterits.com from the GitHub runner's checkout.
-# The runner user (ghrunner) has no docker access and no sudo except this one
-# script (see /etc/sudoers.d/ghrunner-deploy-darkmatterits).
+# Pull-based deploy of darkmatterits.com. Runs as root from deploy-darkmatterits.timer.
 #
-# Whoever can push to main controls the compose file, and Docker runs it as
-# root, so before anything is built:
-#   1. the checkout is copied into a root-only staging folder (ghrunner can't
-#      change it after the check), and refused if it contains symlinks;
-#   2. only docker-compose.yml is used (explicit -f, so no compose.yaml or
-#      override file can sneak in);
-#   3. the resolved config is checked by compose-guard (no privileged, host
-#      namespaces, capabilities, devices, docker socket, host paths, ports on
-#      all interfaces, outside build contexts...).
+#   deploy-darkmatterits              deploy the newest main once GitHub's `check` job passed on it
+#   deploy-darkmatterits --now [SHA]  deploy now without waiting for CI (SHA must be on main;
+#                                     default: newest main). Use for retries and rollbacks.
+#
+# Why pull: the repo is public, so nothing GitHub runs (forks, branches, PRs) may have a path onto
+# the Pi. Root fetches main itself over HTTPS (no credentials), so the only code that can deploy is
+# what is on GitHub's main. No runner, no sudo rule, nothing in the Actions logs.
+#
+# Before anything is built: the commit may not contain symlinks or submodules; docker-compose.yml
+# may not use variables, external resources, ssh/label_file/cache, include or extends; and the
+# resolved config must pass compose-guard. Files are copied with fixed modes (no setuid, nothing
+# world-writable). mailer/.env and the folder's old .git are kept.
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 022
 
-SRC_ROOT=/opt/actions-runner-darkmatterit/_work
+REPO_URL=https://github.com/KingZCoding/darkMatterIT.git
+API=https://api.github.com/repos/KingZCoding/darkMatterIT
+STATE=/var/lib/deploy-darkmatterits
+GIT_DIR=$STATE/repo.git
+STAGE=$STATE/stage
 DEST=/data/sites/newsite
-STAGE=/var/lib/deploy-darkmatterits/stage
-COMPOSE=(docker compose --project-directory "$DEST" --project-name newsite -f "$DEST/docker-compose.yml")
+PROJECT=newsite
+COMPOSE=(docker compose --project-directory "$DEST" --project-name "$PROJECT" -f "$DEST/docker-compose.yml")
 
-[ $# -eq 1 ] || { echo "usage: deploy-darkmatterits <checkout dir>" >&2; exit 2; }
-src=$(realpath -e -- "$1")
-case "$src/" in
-  "$SRC_ROOT"/*) ;;
-  *) echo "refusing: $src is not inside $SRC_ROOT" >&2; exit 2 ;;
+log() { echo "$*"; logger -t deploy-darkmatterits -- "$*"; }
+fail() { log "FAILED: $*"; [ -n "${sha:-}" ] && echo "$sha" > "$STATE/failed"; exit 1; }
+
+now=0; want=
+case "${1:-}" in
+  --now) now=1; want=${2:-} ;;
+  "") ;;
+  *) echo "usage: deploy-darkmatterits [--now [SHA]]" >&2; exit 2 ;;
 esac
-[ -f "$DEST/mailer/.env" ] || { echo "::error::No mailer/.env in $DEST. Create it once by hand (see DEPLOY.md)." >&2; exit 1; }
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+[ -f "$DEST/mailer/.env" ] || { log "No $DEST/mailer/.env; create it once by hand (see DEPLOY.md)"; exit 1; }
 
+install -d -m 700 -o root -g root "$STATE"
 exec 9>/run/deploy-darkmatterits.lock
-flock 9
+flock -n 9 || { echo "another deploy is running"; exit 0; }
 
-echo "== Stage the checkout (root-only copy)"
-install -d -m 700 -o root -g root /var/lib/deploy-darkmatterits
+# --- Fetch main ------------------------------------------------------------------------------
+[ -d "$GIT_DIR" ] || git init -q --bare "$GIT_DIR"
+git --git-dir="$GIT_DIR" fetch -q --no-tags --prune "$REPO_URL" '+refs/heads/main:refs/heads/main'
+main=$(git --git-dir="$GIT_DIR" rev-parse --verify -q 'refs/heads/main^{commit}')
+if [ -n "$want" ]; then
+  sha=$(git --git-dir="$GIT_DIR" rev-parse --verify -q "$want^{commit}") || { echo "unknown commit $want" >&2; exit 2; }
+  git --git-dir="$GIT_DIR" merge-base --is-ancestor "$sha" "$main" || { echo "$want is not on main" >&2; exit 2; }
+else
+  sha=$main
+fi
+
+if [ "$now" = 0 ]; then
+  [ "$sha" = "$(cat "$STATE/deployed" 2>/dev/null)" ] && exit 0      # already live
+  [ "$sha" = "$(cat "$STATE/failed" 2>/dev/null)" ] && exit 0        # failed before; needs a new commit or --now
+
+  # --- Wait for GitHub's `check` job on this exact commit -----------------------------------
+  verdict=$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' \
+      "$API/commits/$sha/check-runs?check_name=check&filter=latest" | python3 -I -c '
+import json, sys
+runs = [r for r in json.load(sys.stdin).get("check_runs", [])
+        if (r.get("app") or {}).get("slug") == "github-actions"]
+if any(r.get("conclusion") == "success" for r in runs): print("success")
+elif runs and all(r.get("status") == "completed" for r in runs): print("failure")
+else: print("pending")') || { echo "could not read CI status for $sha; will retry"; exit 0; }
+  case "$verdict" in
+    success) ;;
+    pending) echo "CI not finished for ${sha:0:12}; will retry"; exit 0 ;;
+    *) log "CI failed for ${sha:0:12}; not deploying"; echo "$sha" > "$STATE/failed"; exit 0 ;;
+  esac
+fi
+
+log "deploying ${sha:0:12} $(git --git-dir="$GIT_DIR" log -1 --format=%s "$sha" | cut -c1-80)"
+
+# --- Stage a root-only copy of exactly that commit ------------------------------------------
+if git --git-dir="$GIT_DIR" ls-tree -r "$sha" | awk '$1 == "120000" || $1 == "160000" {f=1} END {exit !f}'; then
+  fail "commit contains symlinks or submodules"
+fi
 rm -rf "$STAGE"
-rsync -a --no-links --exclude .git --exclude .env -- "$src/" "$STAGE/"
-if [ -n "$(find "$src" -path "$src/.git" -prune -o -type l -print -quit)" ]; then
-  echo "::error::The checkout contains symlinks; refusing to deploy." >&2; exit 1
+install -d -m 700 -o root -g root "$STAGE"
+git --git-dir="$GIT_DIR" archive --format=tar "$sha" | tar -x -C "$STAGE" --no-same-owner --no-same-permissions
+[ -f "$STAGE/docker-compose.yml" ] || fail "no docker-compose.yml in the commit"
+
+# --- Check the compose file is safe to run as root ------------------------------------------
+# Belt and braces on top of compose-guard: no variables (an env_file like ${X:-/elsewhere} would
+# pass a text check and then be read as root), no external volumes/networks, no build ssh,
+# label_file, build cache paths, include or extends.
+if grep -nE '\$|external|label_file|cache_(from|to)|ssh:|include:|extends:' "$STAGE/docker-compose.yml"; then
+  fail "docker-compose.yml uses a refused feature"
 fi
-[ -f "$STAGE/docker-compose.yml" ] || { echo "::error::No docker-compose.yml in the checkout" >&2; exit 1; }
+docker compose --project-directory "$DEST" --project-name "$PROJECT" -f "$STAGE/docker-compose.yml" \
+  config --format json | compose-guard "$DEST" "$STAGE/docker-compose.yml" || fail "compose-guard refused"
 
-echo "== Check the compose file is safe to run as root"
-docker compose --project-directory "$DEST" --project-name newsite -f "$STAGE/docker-compose.yml" \
-  config --format json | compose-guard "$DEST" "$STAGE/docker-compose.yml"
+# --- Copy into place with fixed modes, then rebuild -----------------------------------------
+# --perms with --chmod=D755,F644 sets exact modes on every file (clears setuid/setgid/sticky and
+# any group/world write); --chown makes it all admin's, like the other site folders.
+rsync -rt --perms --chmod=D755,F644 --chown=admin:admin --delete --no-links --no-specials --no-devices \
+ --exclude /.git --exclude .env -- "$STAGE/" "$DEST/"
 
-echo "== Copy code into $DEST (keeps .git and mailer/.env)"
-rsync -a --delete --no-links --exclude .git --exclude .env --chown=admin:admin -- "$STAGE/" "$DEST/"
-if [ -n "$(find "$DEST" -path "$DEST/.git" -prune -o -type l -print -quit)" ]; then
-  echo "::error::Symlink found in $DEST after copy; refusing to build." >&2; exit 1
-fi
+# --force-recreate: the site's config and web root are bind mounts and rsync replaces files
+# (new inodes), so the site container must be recreated to see them.
+"${COMPOSE[@]}" up -d --build --force-recreate --remove-orphans || fail "docker compose up failed"
 
-echo "== Rebuild and restart"
-# --force-recreate: the site's nginx config and web root are bind mounts, and rsync replaces
-# files (new inodes), so the site container must be recreated to see them.
-"${COMPOSE[@]}" up -d --build --force-recreate --remove-orphans
-
-echo "== Health check"
-# Wait up to 90 s for the mailer's Docker healthcheck, then check nothing exited or restarted
-# and that the site answers. (/api/health is not public, so the mailer is checked via Docker.)
+# --- Health check -----------------------------------------------------------------------------
 mailer_id=$("${COMPOSE[@]}" ps -q darkmatter-mailer)
 for _ in $(seq 1 18); do
   [ "$(docker inspect -f '{{.State.Health.Status}}' "$mailer_id" 2>/dev/null)" = healthy ] && break
   sleep 5
 done
-"${COMPOSE[@]}" ps
-bad=$("${COMPOSE[@]}" ps --status exited --status restarting --services)
-# A container that restarted since the deploy is crash-looping even if it shows as up.
+bad=$("${COMPOSE[@]}" ps -a --status exited --status restarting --services)
 for id in $("${COMPOSE[@]}" ps -q); do
-  if [ "$(docker inspect -f '{{.RestartCount}}' "$id")" != "0" ]; then
+  [ "$(docker inspect -f '{{.RestartCount}}' "$id")" = 0 ] || \
     bad="$bad $(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$id")"
-  fi
 done
 [ "$(docker inspect -f '{{.State.Health.Status}}' "$mailer_id" 2>/dev/null)" = healthy ] || bad="$bad darkmatter-mailer(unhealthy)"
 bad=$(echo $bad)
 if [ -n "$bad" ]; then
-  echo "::error::Not running after deploy: $bad"
-  for s in darkmatter-site darkmatter-mailer; do "${COMPOSE[@]}" logs --tail 40 "$s"; done
-  exit 1
+  # Logs go to the journal only (root/adm): they contain visitor IPs.
+  for s in darkmatter-site darkmatter-mailer; do "${COMPOSE[@]}" logs --tail 40 "$s" 2>&1 | logger -t deploy-darkmatterits; done
+  fail "not healthy after deploy: $bad (container logs are in: journalctl -t deploy-darkmatterits)"
 fi
-if ! curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/; then
-  echo "::error::Site did not answer on 10.50.0.3:8085 after deploy"; exit 1
-fi
+curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/ || fail "site did not answer on 10.50.0.3:8085"
 
-echo "== Clean up old images"
-docker image prune -f
-logger -t deploy-darkmatterits "deployed from $src"
+echo "$sha" > "$STATE/deployed"
+rm -f "$STATE/failed"
+# Only this project's dangling images (keeps other projects' rollback images).
+docker image prune -f --filter "label=com.docker.compose.project=$PROJECT" >/dev/null
+log "deployed ${sha:0:12}"

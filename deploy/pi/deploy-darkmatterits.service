@@ -1,0 +1,12 @@
+[Unit]
+Description=Deploy darkmatterits.com from GitHub main (pull)
+After=network-online.target docker.service wg-quick@wg0.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/deploy-darkmatterits
+NoNewPrivileges=yes
+PrivateTmp=yes
+TimeoutStartSec=20min

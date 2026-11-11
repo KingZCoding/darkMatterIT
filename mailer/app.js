@@ -64,6 +64,16 @@ class DailyCounter {
   }
 }
 
+// One mailbox, one key: lowercased, +tags dropped, and dots ignored for Gmail, so
+// jane+1@gmail.com and j.a.n.e@gmail.com don't each get their own confirmation.
+export function recipientKey(email) {
+  let [local, domain] = email.toLowerCase().split('@');
+  local = local.split('+')[0];
+  if (domain === 'googlemail.com') domain = 'gmail.com';
+  if (domain === 'gmail.com') local = local.replaceAll('.', '');
+  return `${local}@${domain}`;
+}
+
 export function validate(body) {
   const name = field(body, 'name');
   const email = field(body, 'email');
@@ -122,7 +132,7 @@ export function createApp({
   const lastConfirm = new Map(); // lowercased recipient -> time of last confirmation
 
   function mayConfirm(email) {
-    const key = email.toLowerCase();
+    const key = recipientKey(email);
     const t = now();
     if (lastConfirm.size > 5000) {
       for (const [k, at] of lastConfirm) if (t - at >= DAY_MS) lastConfirm.delete(k);
@@ -147,10 +157,13 @@ export function createApp({
     limit: perIpLimit,
     standardHeaders: 'draft-7',
     legacyHeaders: false,
+    // Only requests that got as far as sending count, so a few typos don't lock a visitor out.
+    // Rejected requests send nothing and are still capped by nginx's limit_req.
+    skipFailedRequests: true,
     handler: (_req, res) => res.status(429).json({ error: 'rate_limited' }),
   });
 
-  app.post('/support', limiter, express.json({ limit: '16kb' }), async (req, res) => {
+  app.post('/support', limiter, express.json({ limit: '32kb' }), async (req, res) => {
     const { value, error } = validate(req.body);
     if (error) return res.status(400).json({ error });
     if (value.honeypot) return res.json({ ok: true }); // pretend success, send nothing

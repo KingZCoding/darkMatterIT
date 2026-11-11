@@ -1,32 +1,34 @@
-# Every push to main: check the site on GitHub, then (only if that passes) deploy on the Pi.
-# The Pi runs a self-hosted runner that connects OUT to GitHub, so no ports are opened at home
-# and no SSH keys or server secrets live in GitHub. The mailer's SMTP settings stay in
-# mailer/.env on the Pi. See DEPLOY.md.
+# Checks only. This workflow never deploys and never runs on the Pi.
 #
-# This repo is public. There is deliberately no pull_request trigger, and the repo is set to
-# require approval before workflows from outside contributors run, so a fork PR cannot get
-# a job onto the Pi runner.
+# Deploys are PULLED by the Pi: a root systemd timer (deploy-darkmatterits.timer) fetches main
+# from GitHub, waits until this workflow's `check` job has passed for that exact commit, then
+# deploys it. Nothing in GitHub can reach the Pi, so fork PRs and other branches can't either.
+# See DEPLOY.md.
 
-name: check-and-deploy
+name: check
 
 on:
   push:
-    branches: ['**'] # checks run on every branch; the deploy job only runs for main
+    branches: ['**']
+  pull_request:
   workflow_dispatch:
 
 concurrency:
-  group: deploy-darkmatterits
-  cancel-in-progress: false
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  # The Pi looks for a successful check run with exactly this name. Don't rename it.
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - name: Mailer tests
@@ -42,26 +44,21 @@ jobs:
           if find public -name '*.sh' -o -name '.*' -not -name public | grep -q .; then
             echo "::error::Scripts or dotfiles in the web root"; exit 1
           fi
+      - name: No symlinks or submodules (the Pi refuses them)
+        run: |
+          if git ls-files -s | awk '$1 == "120000" || $1 == "160000" {f=1} END {exit !f}'; then
+            echo "::error::Symlinks or submodules are not allowed"; exit 1
+          fi
       - name: Compose file check
         run: |
+          if grep -nE '\$|external|label_file|cache_(from|to)|ssh:|include:|extends:' docker-compose.yml; then
+            echo "::error::docker-compose.yml uses something the Pi's deploy refuses"; exit 1
+          fi
           touch mailer/.env
           docker compose -f docker-compose.yml config -q
       - name: nginx config check
         run: |
-          docker run --rm --add-host darkmatter-mailer:127.0.0.1 \
+          docker run --rm \
             -v "$PWD/nginx/conf.d:/etc/nginx/conf.d:ro" \
             -v "$PWD/public:/usr/share/nginx/html:ro" \
             nginxinc/nginx-unprivileged:1.27-alpine nginx -t
-
-  deploy:
-    needs: check
-    if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, pi, darkmatterits]
-    steps:
-      - uses: actions/checkout@v4
-      # The runner user on the Pi has no Docker access and no general sudo.
-      # It may run only this root-owned script, which stages the checkout, checks the
-      # compose file with compose-guard, copies it into /data/sites/newsite (keeping
-      # mailer/.env), rebuilds and health-checks. See DEPLOY.md.
-      - name: Deploy on the Pi (copy, rebuild, health check)
-        run: sudo -n /usr/local/sbin/deploy-darkmatterits "$GITHUB_WORKSPACE"

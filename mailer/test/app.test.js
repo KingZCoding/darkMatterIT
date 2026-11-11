@@ -1,7 +1,7 @@
 // Run with: npm test   (node's built-in test runner, no network, no SMTP)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp, validate } from '../app.js';
+import { createApp, validate, recipientKey } from '../app.js';
 
 function fakeTransport({ failConfirm = false, failSupport = false } = {}) {
   const sent = [];
@@ -161,4 +161,24 @@ test('validation counts characters, not UTF-16 units, and normalises choices', (
   const v = validate(good({ service: 'Hack', urgency: 'NOW' })).value;
   assert.equal(v.service, 'Other');
   assert.equal(v.urgency, 'Normal');
+});
+
+test('invalid requests do not use up the per-client limit', async (t) => {
+  const s = await start({ perIpLimit: 2 });
+  t.after(s.close);
+  for (let i = 0; i < 5; i++) assert.equal((await s.post(good({ email: 'not-an-email' }))).status, 400);
+  assert.equal((await s.post(good({ email: 'a@example.com' }))).status, 200);
+  assert.equal((await s.post(good({ email: 'b@example.com' }))).status, 200);
+  assert.equal((await s.post(good({ email: 'c@example.com' }))).status, 429);
+});
+
+test('Gmail dot and plus variants share one confirmation', async (t) => {
+  assert.equal(recipientKey('J.a.n.e+promo@GoogleMail.com'), 'jane@gmail.com');
+  assert.equal(recipientKey('j.ane+x@example.com'), 'j.ane@example.com');
+  const s = await start({ perIpLimit: 100 });
+  t.after(s.close);
+  await s.post(good({ email: 'jane@gmail.com' }));
+  await s.post(good({ email: 'j.a.n.e+1@gmail.com' }));
+  await s.post(good({ email: 'jane+2@googlemail.com' }));
+  assert.equal(s.transporter.sent.filter((m) => typeof m.to === 'object').length, 1);
 });

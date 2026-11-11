@@ -4,7 +4,6 @@
 
 ```
 browser ──HTTPS──▶ VPS nginx (TLS, security headers, CSP)
-                     │  /etc/nginx/sites-enabled/darkmatterit.conf
                      ▼  WireGuard
                    Pi 10.50.0.3:8085 ── darkmatter-site (nginx-unprivileged, serves public/)
                                           └── /api/support only ──▶ darkmatter-mailer (Node, port 3000, internal only)
@@ -12,52 +11,54 @@ browser ──HTTPS──▶ VPS nginx (TLS, security headers, CSP)
 
 On the Pi the project lives in `/data/sites/newsite` (compose project name `newsite`).
 The mailer's settings are in `/data/sites/newsite/mailer/.env` on the Pi only; it is never committed
-and the deploy never overwrites it. Variables are listed in `mailer/.env.example`: `SUPPORT_TO`, `FROM_EMAIL`, `SMTP_USER`, `SMTP_PASS`,
-optional `PORT`, `SMTP_HOST`, `SMTP_PORT`, `SUPPORT_DAILY_CAP` (100), `CONFIRM_DAILY_CAP` (50).
+and a deploy never overwrites it. Variables are listed in `mailer/.env.example`: `SUPPORT_TO`, `FROM_EMAIL`,
+`SMTP_USER`, `SMTP_PASS`, optional `PORT`, `SMTP_HOST`, `SMTP_PORT`, `SUPPORT_DAILY_CAP` (100), `CONFIRM_DAILY_CAP` (50).
 
 ## How a deploy happens
 
-Push (or merge) to `main` → `.github/workflows/deploy.yml`:
+The Pi **pulls**; GitHub never reaches the Pi.
 
-1. **check** (GitHub-hosted, every branch): mailer tests (`npm test`), JS syntax, no scripts/dotfiles in `public/`, `docker compose config`, `nginx -t`.
-2. **deploy** (self-hosted runner on the Pi, labels `self-hosted, pi, darkmatterits`): runs
-   `sudo -n /usr/local/sbin/deploy-darkmatterits "$GITHUB_WORKSPACE"`.
+1. Every push and pull request runs `.github/workflows/deploy.yml` on GitHub-hosted runners. It only checks:
+   mailer tests, JS syntax, no scripts/dotfiles/symlinks, `docker compose config`, `nginx -t`.
+2. On the Pi, `deploy-darkmatterits.timer` runs `/usr/local/sbin/deploy-darkmatterits` as root every 5 minutes. It:
+   - fetches `main` from GitHub over HTTPS (public repo, no credentials) into a root-only repo;
+   - does nothing if that commit is already live, or failed before;
+   - asks GitHub's public API whether the `check` job passed **for that exact commit**, and waits if it hasn't finished;
+   - extracts the commit into a root-only staging folder, refuses symlinks/submodules and risky compose features,
+     and runs the resolved compose config through `/usr/local/sbin/compose-guard`;
+   - copies it into `/data/sites/newsite` with fixed modes (dirs 755, files 644, owner admin), keeping `mailer/.env`;
+   - rebuilds with `docker compose up -d --build --force-recreate`, waits for the mailer's healthcheck,
+     checks nothing exited or restarted and the site answers on 10.50.0.3:8085;
+   - records the commit and prunes only this project's old images.
 
-The runner user (`ghrunner`) has no Docker access and no general sudo. The one root-owned helper it may run:
-- refuses checkouts outside `/opt/actions-runner-darkmatterit/_work` and checkouts containing symlinks;
-- stages a root-only copy, then runs the resolved compose config through `/usr/local/sbin/compose-guard`
-  (no privileged containers, host namespaces, docker socket, host paths, or ports on all interfaces —
-  published ports must be on `10.50.0.3` or loopback);
-- rsyncs the code into `/data/sites/newsite` (keeps `.git` and `mailer/.env`), runs `docker compose up -d --build`,
-  waits for the mailer's Docker healthcheck, checks nothing exited or restarted and the site answers, and prunes old images.
+So a merge to `main` goes live within about 5 minutes of its check passing. Branches, forks and PRs can't deploy.
+Output goes to the journal only: `journalctl -t deploy-darkmatterits` (and `journalctl -u deploy-darkmatterits`).
 
-Server pieces (installed on the Pi by `deploy/pi/install.sh`; the helper's source is `deploy/pi/deploy-darkmatterits`):
-- `/usr/local/sbin/deploy-darkmatterits` — the helper
-- `/etc/sudoers.d/ghrunner-deploy-darkmatterits` — lets `ghrunner` run only that helper
-- `/opt/actions-runner-darkmatterit` + `actions.runner.*.DarkMatterIT-site.service` — the runner for this repo
-  (the existing `/opt/actions-runner` belongs to ghostlightsocial; GitHub runners are per repo)
+State: `/var/lib/deploy-darkmatterits/` (`deployed` = live commit, `failed` = last failed commit, `repo.git`, `stage/`).
 
 ## One-time Pi setup
 
-From this repo on your computer (needs `gh` logged in and the `pi` SSH host):
+From this repo on your computer (needs the `pi` SSH host):
 
 ```bash
-scp deploy/pi/install.sh deploy/pi/deploy-darkmatterits pi:/tmp/
-gh api -X POST repos/KingZCoding/darkMatterIT/actions/runners/registration-token --jq .token | ssh pi 'sudo bash /tmp/install.sh /tmp/deploy-darkmatterits'
+d=$(ssh pi 'mktemp -d') && scp deploy/pi/install.sh deploy/pi/deploy-darkmatterits* "pi:$d/" && ssh pi "sudo bash $d/install.sh"
 ```
 
-Also set **Settings → Actions → General → Fork pull request workflows** to
-"Require approval for all external contributors", because this public repo now has a self-hosted runner.
+It installs `/usr/local/sbin/deploy-darkmatterits` and `/etc/systemd/system/deploy-darkmatterits.{service,timer}`
+(root-owned), pauses and rebaselines `secwatch` around the change, enables the timer and does a first check.
+Re-run it the same way to update the deploy script. There is no GitHub runner, sudo rule or token for this repo.
 
-## Manual deploy / rollback
+## Manual deploy, retry, rollback
 
-On the Pi as `admin`:
+On the Pi:
 
 ```bash
-cd /data/sites/newsite
-git fetch origin && git checkout <commit>   # or main
-sudo docker compose -p newsite up -d --build
+sudo deploy-darkmatterits --now            # deploy the newest main now, without waiting for CI
+sudo deploy-darkmatterits --now <commit>   # roll back/forward to any commit on main
+journalctl -t deploy-darkmatterits -n 50   # what happened
 ```
+
+A failed commit is not retried automatically; push a fix, or use `--now`.
 
 ## Old method (removed)
 

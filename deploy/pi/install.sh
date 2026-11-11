@@ -1,41 +1,41 @@
 #!/usr/bin/env bash
-# One-time Pi setup for the darkmatterits deploy. Run as root on the Pi (see DEPLOY.md):
+# One-time Pi setup for the darkmatterits pull deploy. Run from this repo on your PC (see DEPLOY.md):
 #
-#   scp deploy/pi/install.sh deploy/pi/deploy-darkmatterits pi:/tmp/
-#   gh api -X POST repos/KingZCoding/darkMatterIT/actions/runners/registration-token --jq .token \
-#     | ssh pi 'sudo bash /tmp/install.sh /tmp/deploy-darkmatterits'
+#   d=$(ssh pi 'mktemp -d') && scp deploy/pi/install.sh deploy/pi/deploy-darkmatterits* "pi:$d/" && ssh pi "sudo bash $d/install.sh"
 #
-# The runner registration token is read from stdin (never put on a command line).
-# Idempotent: re-running reinstalls the helper and sudoers rule and skips runner
-# registration if the runner is already configured.
+# Installs, all root-owned:
+#   /usr/local/sbin/deploy-darkmatterits                    the deploy script
+#   /etc/systemd/system/deploy-darkmatterits.{service,timer} runs it every 5 minutes
+# Nothing else: no GitHub runner, no sudo rule, no tokens. Safe to re-run to update the script.
 set -euo pipefail
 
-HELPER_SRC=${1:?usage: install.sh <path to deploy-darkmatterits>}
-REPO_URL=https://github.com/KingZCoding/darkMatterIT
-RUNNER_SRC=/opt/actions-runner                 # ghostlightsocial's runner, used only as a binary source
-RUNNER_DIR=/opt/actions-runner-darkmatterit
-RUNNER_USER=ghrunner
-SUDOERS=/etc/sudoers.d/ghrunner-deploy-darkmatterits
-
-[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
-for b in rsync flock curl docker; do command -v "$b" >/dev/null || { echo "missing $b" >&2; exit 1; }; done
+[ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }
+SRC=$(cd "$(dirname "$0")" && pwd)
+for f in deploy-darkmatterits deploy-darkmatterits.service deploy-darkmatterits.timer; do
+  [ -f "$SRC/$f" ] || { echo "missing $SRC/$f" >&2; exit 1; }
+done
+for b in docker git rsync curl python3 flock; do command -v "$b" >/dev/null || { echo "missing $b" >&2; exit 1; }; done
 [ -x /usr/local/sbin/compose-guard ] || { echo "missing /usr/local/sbin/compose-guard" >&2; exit 1; }
 [ -f /data/sites/newsite/mailer/.env ] || { echo "missing /data/sites/newsite/mailer/.env" >&2; exit 1; }
 
-# secwatch watches /usr/local/sbin, sudoers and systemd units. Pause it so this install doesn't
-# send a tamper alert, and always start it again (rebaselined on success) when the script exits.
+# secwatch watches /usr/local/sbin and systemd units. Pause it so this install doesn't send a
+# tamper alert. On exit the timer is ALWAYS started again; it is rebaselined only on success.
 SECWATCH_PAUSED=0
 resume_secwatch() {
-  status=$?
+  local status=$?
+  set +e
   if [ "$SECWATCH_PAUSED" = 1 ]; then
     if [ "$status" = 0 ]; then
       echo "== Rebaseline secwatch"
-      python3 -I /usr/local/sbin/secwatch.py --rebaseline
+      python3 -I /usr/local/sbin/secwatch.py --rebaseline || echo "!! secwatch rebaseline failed; expect one tamper alert for this install" >&2
     else
-      echo "!! install failed (exit $status); secwatch NOT rebaselined, so it will report what changed" >&2
+      echo "!! install failed (exit $status); secwatch not rebaselined, so it will report what changed" >&2
     fi
-    systemctl start secwatch.timer
+    systemctl start secwatch.timer || echo "!! could not start secwatch.timer - start it by hand" >&2
   fi
+  # Remove the staged copy, but only if it is the mktemp folder from DEPLOY.md.
+  case "$SRC" in /tmp/tmp.*) rm -rf -- "$SRC" ;; esac
+  exit "$status"
 }
 trap resume_secwatch EXIT
 if systemctl is-active --quiet secwatch.timer; then
@@ -44,38 +44,17 @@ if systemctl is-active --quiet secwatch.timer; then
   SECWATCH_PAUSED=1
 fi
 
-echo "== Install deploy helper"
-bash -n "$HELPER_SRC"
-install -m 750 -o root -g root "$HELPER_SRC" /usr/local/sbin/deploy-darkmatterits
+echo "== Install deploy script and timer"
+sed -i 's/\r$//' "$SRC/deploy-darkmatterits" "$SRC"/deploy-darkmatterits.service "$SRC"/deploy-darkmatterits.timer
+bash -n "$SRC/deploy-darkmatterits"
+install -m 750 -o root -g root "$SRC/deploy-darkmatterits" /usr/local/sbin/deploy-darkmatterits
+install -m 644 -o root -g root "$SRC/deploy-darkmatterits.service" /etc/systemd/system/deploy-darkmatterits.service
+install -m 644 -o root -g root "$SRC/deploy-darkmatterits.timer" /etc/systemd/system/deploy-darkmatterits.timer
+systemctl daemon-reload
+systemd-analyze verify /etc/systemd/system/deploy-darkmatterits.service /etc/systemd/system/deploy-darkmatterits.timer
+systemctl enable --now deploy-darkmatterits.timer
 
-echo "== Install sudoers rule (ghrunner may run only the helper)"
-tmp=$(mktemp)
-echo "$RUNNER_USER ALL=(root) NOPASSWD: /usr/local/sbin/deploy-darkmatterits $RUNNER_DIR/_work/*" > "$tmp"
-visudo -cf "$tmp"
-install -m 440 -o root -g root "$tmp" "$SUDOERS"
-rm -f "$tmp"
-visudo -c >/dev/null
-
-echo "== Runner for $REPO_URL in $RUNNER_DIR"
-if [ -f "$RUNNER_DIR/.runner" ]; then
-  echo "already configured, skipping registration"
-else
-  read -r TOKEN
-  [ -n "${TOKEN:-}" ] || { echo "no registration token on stdin" >&2; exit 1; }
-  install -d -m 755 -o "$RUNNER_USER" -g "$RUNNER_USER" "$RUNNER_DIR"
-  rsync -a --exclude _work --exclude _diag --exclude .runner --exclude '.credentials*' \
-    --exclude .service --chown="$RUNNER_USER:$RUNNER_USER" "$RUNNER_SRC/" "$RUNNER_DIR/"
-  cd "$RUNNER_DIR"
-  sudo -u "$RUNNER_USER" ./config.sh --unattended --url "$REPO_URL" --token "$TOKEN" \
-    --name DarkMatterIT-site --labels pi,darkmatterits --work _work --replace
-  ./svc.sh install "$RUNNER_USER"
-fi
-cd "$RUNNER_DIR"
-./svc.sh start || true
-./svc.sh status | head -5
-
-systemctl list-units --type=service --state=active --no-legend 'actions.runner.*.DarkMatterIT-site.service' | grep -q . \
-  || { echo "runner service is not active" >&2; exit 1; }
-
-rm -f "$HELPER_SRC" "$0"
-echo "== Done. Merge to main (or run the workflow on main) to deploy."
+echo "== First check (fetches main; deploys only if GitHub's check job passed on it)"
+/usr/local/sbin/deploy-darkmatterits || echo "!! first run reported a problem; see: journalctl -t deploy-darkmatterits" >&2
+systemctl list-timers deploy-darkmatterits.timer --no-pager
+echo "== Done. Merging to main deploys within about 5 minutes of the check passing."

@@ -101,6 +101,7 @@ const ERROR_TEXT = {
   invalid_name: 'Please enter your name (2–120 characters).',
   invalid_email: 'Please enter a valid email address.',
   invalid_message: 'Please write a message of 10–4000 characters.',
+  too_large: 'Your message is too long. Please shorten it.',
   rate_limited: `Too many requests. Please wait a few minutes, or email ${EMAIL}.`,
   busy: `We're receiving a lot of requests. Please email ${EMAIL} or call ${PHONE_DISPLAY}.`,
 };
@@ -138,7 +139,7 @@ form?.addEventListener('submit', async (e) => {
 
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const code = res.status === 429 ? 'rate_limited' : data.error;
+      const code = res.status === 429 ? 'rate_limited' : res.status === 413 ? 'too_large' : data.error;
       showToast(ERROR_TEXT[code] || `Could not send. Please email ${EMAIL} or call ${PHONE_DISPLAY}.`, true);
       return;
     }
