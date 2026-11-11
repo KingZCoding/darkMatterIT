@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
 # Pull-based deploy of darkmatterits.com. Runs as root from deploy-darkmatterits.timer.
 #
-#   deploy-darkmatterits              deploy the newest main once GitHub's `check` job passed on it
-#   deploy-darkmatterits --now [SHA]  deploy now without waiting for CI (SHA must be on main;
-#                                     default: newest main). Use for retries and rollbacks.
+#   deploy-darkmatterits              deploy the newest main once its CI run on GitHub has passed
+#   deploy-darkmatterits --now        deploy the newest main now, without waiting for CI
+#   deploy-darkmatterits --now SHA    deploy SHA (must be on main) and hold it until main moves (rollback)
 #
 # Why pull: the repo is public, so nothing GitHub runs (forks, branches, PRs) may have a path onto
 # the Pi. Root fetches main itself over HTTPS (no credentials), so the only code that can deploy is
 # what is on GitHub's main. No runner, no sudo rule, nothing in the Actions logs.
 #
-# Before anything is built: the commit may not contain symlinks or submodules; docker-compose.yml
-# may not use variables, external resources, ssh/label_file/cache, include or extends; and the
-# resolved config must pass compose-guard. Files are copied with fixed modes (no setuid, nothing
-# world-writable). mailer/.env and the folder's old .git are kept.
-set -euo pipefail
+# Before anything is built: the commit may not contain symlinks or submodules; its .gitattributes
+# can't alter the export; docker-compose.yml must pass the root-owned allowlist
+# (darkmatterits-compose-check, BEFORE compose reads it) and then compose-guard. Files are copied
+# with fixed modes (no setuid, nothing world-writable). mailer/.env and the folder's .git are kept.
+set -Eeuo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export GIT_TERMINAL_PROMPT=0 HOME=/root
 umask 022
 
-REPO_URL=https://github.com/KingZCoding/darkMatterIT.git
-API=https://api.github.com/repos/KingZCoding/darkMatterIT
+REPO=KingZCoding/darkMatterIT
+REPO_URL=https://github.com/$REPO.git
+API=https://api.github.com/repos/$REPO
+WORKFLOW_PATH=.github/workflows/check.yml
 STATE=/var/lib/deploy-darkmatterits
 GIT_DIR=$STATE/repo.git
 STAGE=$STATE/stage
@@ -26,8 +29,10 @@ DEST=/data/sites/newsite
 PROJECT=newsite
 COMPOSE=(docker compose --project-directory "$DEST" --project-name "$PROJECT" -f "$DEST/docker-compose.yml")
 
+sha=
 log() { echo "$*"; logger -t deploy-darkmatterits -- "$*"; }
-fail() { log "FAILED: $*"; [ -n "${sha:-}" ] && echo "$sha" > "$STATE/failed"; exit 1; }
+# A deploy failure is sticky for that commit: the timer won't rebuild it every 5 minutes.
+fail() { trap - ERR; log "FAILED ${sha:0:12}: $*"; if [ -n "$sha" ]; then echo "$sha" > "$STATE/failed"; fi; exit 1; }
 
 now=0; want=
 case "${1:-}" in
@@ -40,38 +45,73 @@ esac
 
 install -d -m 700 -o root -g root "$STATE"
 exec 9>/run/deploy-darkmatterits.lock
-flock -n 9 || { echo "another deploy is running"; exit 0; }
+if [ "$now" = 1 ]; then
+  echo "waiting for any running deploy to finish..."; flock 9
+else
+  flock -n 9 || exit 0   # a deploy is already running; the next tick will look again
+fi
 
-# --- Fetch main ------------------------------------------------------------------------------
+# --- Fetch main (network errors: just try again next tick) -----------------------------------
 [ -d "$GIT_DIR" ] || git init -q --bare "$GIT_DIR"
-git --git-dir="$GIT_DIR" fetch -q --no-tags --prune "$REPO_URL" '+refs/heads/main:refs/heads/main'
+# Neutralise the commit's own .gitattributes for `git archive`: no export-subst (it would let a
+# commit message or branch name be written into files), no export-ignore, no filters.
+printf '* -export-subst -export-ignore -ident -filter -working-tree-encoding\n' > "$GIT_DIR/info/attributes"
+if ! git --git-dir="$GIT_DIR" -c transfer.fsckObjects=true fetch -q --no-tags --prune "$REPO_URL" '+refs/heads/main:refs/heads/main'; then
+  echo "fetch failed; will retry"; exit 0
+fi
 main=$(git --git-dir="$GIT_DIR" rev-parse --verify -q 'refs/heads/main^{commit}')
-if [ -n "$want" ]; then
-  sha=$(git --git-dir="$GIT_DIR" rev-parse --verify -q "$want^{commit}") || { echo "unknown commit $want" >&2; exit 2; }
-  git --git-dir="$GIT_DIR" merge-base --is-ancestor "$sha" "$main" || { echo "$want is not on main" >&2; exit 2; }
+
+if [ "$now" = 1 ]; then
+  if [ -n "$want" ]; then
+    sha=$(git --git-dir="$GIT_DIR" rev-parse --verify -q "$want^{commit}") || { echo "unknown commit $want" >&2; exit 2; }
+    git --git-dir="$GIT_DIR" merge-base --is-ancestor "$sha" "$main" || { echo "$want is not on main" >&2; exit 2; }
+  else
+    sha=$main
+  fi
+  # A rollback holds until main moves past the commit it was taken on.
+  if [ "$sha" != "$main" ]; then echo "$main" > "$STATE/pinned"; else rm -f "$STATE/pinned"; fi
 else
   sha=$main
-fi
+  if [ -f "$STATE/pinned" ]; then
+    [ "$main" = "$(cat "$STATE/pinned")" ] && exit 0                 # rolled back; main hasn't moved
+    rm -f "$STATE/pinned"; log "main moved past the rollback pin; resuming normal deploys"
+  fi
+  [ "$sha" = "$(cat "$STATE/deployed" 2>/dev/null || true)" ] && exit 0   # already live
+  [ "$sha" = "$(cat "$STATE/failed" 2>/dev/null || true)" ] && exit 0     # failed to deploy; needs a new commit or --now
 
-if [ "$now" = 0 ]; then
-  [ "$sha" = "$(cat "$STATE/deployed" 2>/dev/null)" ] && exit 0      # already live
-  [ "$sha" = "$(cat "$STATE/failed" 2>/dev/null)" ] && exit 0        # failed before; needs a new commit or --now
-
-  # --- Wait for GitHub's `check` job on this exact commit -----------------------------------
+  # --- Wait for the push-to-main run of this repo's own check workflow on this exact commit ---
+  # Only runs GitHub itself started for a push to main of this repo, from check.yml, count; a check
+  # run posted by some other workflow or app can't make the Pi deploy.
   verdict=$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' \
-      "$API/commits/$sha/check-runs?check_name=check&filter=latest" | python3 -I -c '
-import json, sys
-runs = [r for r in json.load(sys.stdin).get("check_runs", [])
-        if (r.get("app") or {}).get("slug") == "github-actions"]
-if any(r.get("conclusion") == "success" for r in runs): print("success")
-elif runs and all(r.get("status") == "completed" for r in runs): print("failure")
-else: print("pending")') || { echo "could not read CI status for $sha; will retry"; exit 0; }
+      "$API/actions/runs?head_sha=$sha&event=push&branch=main&per_page=20" | \
+    REPO="$REPO" WORKFLOW_PATH="$WORKFLOW_PATH" python3 -I -c '
+import json, os, sys
+runs = [r for r in json.load(sys.stdin).get("workflow_runs", [])
+        if r.get("path") == os.environ["WORKFLOW_PATH"]
+        and (r.get("repository") or {}).get("full_name") == os.environ["REPO"]
+        and (r.get("head_repository") or {}).get("full_name") == os.environ["REPO"]
+        and r.get("event") == "push" and r.get("head_branch") == "main"]
+runs.sort(key=lambda r: (r.get("run_number", 0), r.get("run_attempt", 0)), reverse=True)
+latest = runs[0] if runs else None
+if latest is None or latest.get("status") != "completed": print("pending")
+elif latest.get("conclusion") == "success": print("success")
+elif latest.get("conclusion") == "failure": print("failure")
+else: print("pending")   # cancelled / skipped / timed out: wait for a re-run') \
+    || { echo "could not read CI status for ${sha:0:12}; will retry"; exit 0; }
   case "$verdict" in
     success) ;;
-    pending) echo "CI not finished for ${sha:0:12}; will retry"; exit 0 ;;
-    *) log "CI failed for ${sha:0:12}; not deploying"; echo "$sha" > "$STATE/failed"; exit 0 ;;
+    pending) exit 0 ;;
+    *)
+      # Not sticky: a re-run that passes is picked up on a later tick. Log once per commit.
+      if [ "$sha" != "$(cat "$STATE/ci_failed" 2>/dev/null || true)" ]; then
+        log "CI failed for ${sha:0:12}; not deploying"; echo "$sha" > "$STATE/ci_failed"
+      fi
+      exit 0 ;;
   esac
 fi
+
+# From here on any unexpected error is a logged, sticky failure for this commit.
+trap 'fail "unexpected error at line $LINENO"' ERR
 
 log "deploying ${sha:0:12} $(git --git-dir="$GIT_DIR" log -1 --format=%s "$sha" | cut -c1-80)"
 
@@ -85,12 +125,9 @@ git --git-dir="$GIT_DIR" archive --format=tar "$sha" | tar -x -C "$STAGE" --no-s
 [ -f "$STAGE/docker-compose.yml" ] || fail "no docker-compose.yml in the commit"
 
 # --- Check the compose file is safe to run as root ------------------------------------------
-# Belt and braces on top of compose-guard: no variables (an env_file like ${X:-/elsewhere} would
-# pass a text check and then be read as root), no external volumes/networks, no build ssh,
-# label_file, build cache paths, include or extends.
-if grep -nE '\$|external|label_file|cache_(from|to)|ssh:|include:|extends:' "$STAGE/docker-compose.yml"; then
-  fail "docker-compose.yml uses a refused feature"
-fi
+# 1) Strict allowlist on the parsed file, before docker compose reads it at all.
+darkmatterits-compose-check "$STAGE/docker-compose.yml" || fail "compose allowlist refused the file"
+# 2) The Pi-wide guard on the resolved config.
 docker compose --project-directory "$DEST" --project-name "$PROJECT" -f "$STAGE/docker-compose.yml" \
   config --format json | compose-guard "$DEST" "$STAGE/docker-compose.yml" || fail "compose-guard refused"
 
@@ -98,7 +135,7 @@ docker compose --project-directory "$DEST" --project-name "$PROJECT" -f "$STAGE/
 # --perms with --chmod=D755,F644 sets exact modes on every file (clears setuid/setgid/sticky and
 # any group/world write); --chown makes it all admin's, like the other site folders.
 rsync -rt --perms --chmod=D755,F644 --chown=admin:admin --delete --no-links --no-specials --no-devices \
- --exclude /.git --exclude .env -- "$STAGE/" "$DEST/"
+  --exclude /.git --exclude .env -- "$STAGE/" "$DEST/"
 
 # --force-recreate: the site's config and web root are bind mounts and rsync replaces files
 # (new inodes), so the site container must be recreated to see them.
@@ -107,25 +144,31 @@ rsync -rt --perms --chmod=D755,F644 --chown=admin:admin --delete --no-links --no
 # --- Health check -----------------------------------------------------------------------------
 mailer_id=$("${COMPOSE[@]}" ps -q darkmatter-mailer)
 for _ in $(seq 1 18); do
-  [ "$(docker inspect -f '{{.State.Health.Status}}' "$mailer_id" 2>/dev/null)" = healthy ] && break
+  [ "$(docker inspect -f '{{.State.Health.Status}}' "$mailer_id" 2>/dev/null || true)" = healthy ] && break
   sleep 5
 done
 bad=$("${COMPOSE[@]}" ps -a --status exited --status restarting --services)
 for id in $("${COMPOSE[@]}" ps -q); do
-  [ "$(docker inspect -f '{{.RestartCount}}' "$id")" = 0 ] || \
+  if [ "$(docker inspect -f '{{.RestartCount}}' "$id")" != 0 ]; then
     bad="$bad $(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$id")"
+  fi
 done
-[ "$(docker inspect -f '{{.State.Health.Status}}' "$mailer_id" 2>/dev/null)" = healthy ] || bad="$bad darkmatter-mailer(unhealthy)"
+if [ "$(docker inspect -f '{{.State.Health.Status}}' "$mailer_id" 2>/dev/null || true)" != healthy ]; then
+  bad="$bad darkmatter-mailer(unhealthy)"
+fi
 bad=$(echo $bad)
 if [ -n "$bad" ]; then
   # Logs go to the journal only (root/adm): they contain visitor IPs.
-  for s in darkmatter-site darkmatter-mailer; do "${COMPOSE[@]}" logs --tail 40 "$s" 2>&1 | logger -t deploy-darkmatterits; done
-  fail "not healthy after deploy: $bad (container logs are in: journalctl -t deploy-darkmatterits)"
+  for s in darkmatter-site darkmatter-mailer; do
+    "${COMPOSE[@]}" logs --tail 40 "$s" 2>&1 | logger -t deploy-darkmatterits || true
+  done
+  fail "not healthy after deploy: $bad (container logs: journalctl -t deploy-darkmatterits)"
 fi
 curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/ || fail "site did not answer on 10.50.0.3:8085"
 
+trap - ERR
 echo "$sha" > "$STATE/deployed"
-rm -f "$STATE/failed"
+rm -f "$STATE/failed" "$STATE/ci_failed"
 # Only this project's dangling images (keeps other projects' rollback images).
-docker image prune -f --filter "label=com.docker.compose.project=$PROJECT" >/dev/null
+docker image prune -f --filter "label=com.docker.compose.project=$PROJECT" >/dev/null || true
 log "deployed ${sha:0:12}"

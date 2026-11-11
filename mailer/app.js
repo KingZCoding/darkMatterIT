@@ -68,7 +68,7 @@ class DailyCounter {
 // jane+1@gmail.com and j.a.n.e@gmail.com don't each get their own confirmation.
 export function recipientKey(email) {
   let [local, domain] = email.toLowerCase().split('@');
-  local = local.split('+')[0];
+  local = local.split('+')[0] || local; // "+x@..." keeps its whole local part
   if (domain === 'googlemail.com') domain = 'gmail.com';
   if (domain === 'gmail.com') local = local.replaceAll('.', '');
   return `${local}@${domain}`;

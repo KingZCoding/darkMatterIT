@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Strict allowlist for darkmatterits' docker-compose.yml. Runs as root on the Pi BEFORE docker
+compose ever reads the file (so no env_file, interpolation or build option is evaluated first),
+and in CI. Installed root-owned at /usr/local/sbin/darkmatterits-compose-check; the deploy uses
+that copy, never the one in the commit.
+
+It parses the YAML (so escapes like "\\x24" or quoted keys can't hide anything) and allows only
+the shapes this project uses. Anything else is refused; extend the allowlist here on purpose.
+
+Usage: darkmatterits-compose-check <docker-compose.yml>   exit 0 = allowed, 1 = refused
+"""
+import re
+import sys
+
+import yaml
+
+PATH_RE = re.compile(r"^\./[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")      # ./relative, no ..
+CPATH_RE = re.compile(r"^/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")      # absolute path in container
+PORT_RE = re.compile(r"^(10\.50\.0\.3|127\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d{1,5}:\d{1,5}$")
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+IMAGE_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?(@sha256:[0-9a-f]{64})?$")
+RESTART = {"no", "always", "unless-stopped", "on-failure"}
+SERVICE_KEYS = {"image", "container_name", "restart", "ports", "volumes", "read_only", "tmpfs",
+                "cap_drop", "security_opt", "depends_on", "logging", "build", "env_file",
+                "environment"}
+
+bad = []
+
+
+def no_dollar(node, where="root"):
+    """No string anywhere may contain $ (blocks all interpolation, however it is spelled)."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            no_dollar(k, where)
+            no_dollar(v, f"{where}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            no_dollar(v, f"{where}[{i}]")
+    elif isinstance(node, str) and "$" in node:
+        bad.append(f"{where}: '$' is not allowed")
+
+
+def rel_path(p):
+    return isinstance(p, str) and PATH_RE.match(p) and ".." not in p.split("/")
+
+
+def str_list(v, where, check):
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+        bad.append(f"{where}: must be a list of strings")
+        return
+    for x in v:
+        if not check(x):
+            bad.append(f"{where}: '{x}' is not allowed")
+
+
+def main(path):
+    with open(path, encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    if not isinstance(doc, dict):
+        print("darkmatterits-compose-check: not a mapping", file=sys.stderr)
+        return 1
+    no_dollar(doc)
+
+    for k in doc:
+        if k != "services" and not (isinstance(k, str) and k.startswith("x-")):
+            bad.append(f"top-level '{k}' is not allowed (only services and x-* anchors)")
+
+    services = doc.get("services")
+    if not isinstance(services, dict) or not services:
+        bad.append("services: missing")
+        services = {}
+    names = set(services)
+    for name, s in services.items():
+        w = f"services.{name}"
+        if not (isinstance(name, str) and NAME_RE.match(name)):
+            bad.append(f"{w}: bad service name")
+        if not isinstance(s, dict):
+            bad.append(f"{w}: must be a mapping")
+            continue
+        for k in s:
+            if k not in SERVICE_KEYS:
+                bad.append(f"{w}.{k}: not allowed")
+        if ("image" in s) == ("build" in s):
+            bad.append(f"{w}: needs exactly one of image or build")
+        if "image" in s and not (isinstance(s["image"], str) and IMAGE_RE.match(s["image"])):
+            bad.append(f"{w}.image: bad image reference")
+        if "build" in s and not rel_path(s["build"]):
+            bad.append(f"{w}.build: must be a plain ./relative folder (no options)")
+        if "container_name" in s and not (isinstance(s["container_name"], str) and NAME_RE.match(s["container_name"])):
+            bad.append(f"{w}.container_name: bad name")
+        if "restart" in s and s["restart"] not in RESTART:
+            bad.append(f"{w}.restart: bad value")
+        if "ports" in s:
+            str_list(s["ports"], f"{w}.ports", PORT_RE.match)
+        if "volumes" in s:
+            def vol_ok(v):
+                parts = v.split(":")
+                return (len(parts) in (2, 3) and rel_path(parts[0]) and CPATH_RE.match(parts[1])
+                        and (len(parts) == 2 or parts[2] == "ro"))
+            str_list(s["volumes"], f"{w}.volumes", vol_ok)
+        if "env_file" in s:
+            str_list(s["env_file"], f"{w}.env_file", rel_path)
+        if "tmpfs" in s:
+            str_list(s["tmpfs"], f"{w}.tmpfs", CPATH_RE.match)
+        if "cap_drop" in s:
+            str_list(s["cap_drop"], f"{w}.cap_drop", lambda c: c == "ALL" or re.match(r"^[A-Z_]+$", c))
+        if "security_opt" in s:
+            str_list(s["security_opt"], f"{w}.security_opt", lambda o: o == "no-new-privileges:true")
+        if "depends_on" in s:
+            str_list(s["depends_on"], f"{w}.depends_on", lambda d: d in names)
+        if "read_only" in s and not isinstance(s["read_only"], bool):
+            bad.append(f"{w}.read_only: must be true/false")
+        if "environment" in s:
+            env = s["environment"]
+            if not isinstance(env, dict) or not all(
+                    isinstance(k, str) and re.match(r"^[A-Z][A-Z0-9_]*$", k) and isinstance(v, (str, int, bool))
+                    for k, v in env.items()):
+                bad.append(f"{w}.environment: must map NAME: value")
+        if "logging" in s:
+            lg = s["logging"]
+            if not (isinstance(lg, dict) and lg.get("driver") == "json-file" and set(lg) <= {"driver", "options"}
+                    and set((lg.get("options") or {})) <= {"max-size", "max-file"}):
+                bad.append(f"{w}.logging: only json-file with max-size/max-file")
+
+    if bad:
+        print("darkmatterits-compose-check: refusing this compose file:", file=sys.stderr)
+        for b in bad:
+            print(f"  - {b}", file=sys.stderr)
+        return 1
+    print("darkmatterits-compose-check: ok")
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("usage: darkmatterits-compose-check <docker-compose.yml>", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(main(sys.argv[1]))

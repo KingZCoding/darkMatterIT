@@ -1,8 +1,9 @@
 # Checks only. This workflow never deploys and never runs on the Pi.
 #
 # Deploys are PULLED by the Pi: a root systemd timer (deploy-darkmatterits.timer) fetches main
-# from GitHub, waits until this workflow's `check` job has passed for that exact commit, then
-# deploys it. Nothing in GitHub can reach the Pi, so fork PRs and other branches can't either.
+# from GitHub, waits until the push-to-main run of THIS file (.github/workflows/check.yml) has
+# passed for that exact commit, then deploys it. Don't rename this file without updating
+# WORKFLOW_PATH in deploy/pi/deploy-darkmatterits. Nothing in GitHub can reach the Pi, so fork PRs and other branches can't either.
 # See DEPLOY.md.
 
 name: check
@@ -21,7 +22,6 @@ permissions:
   contents: read
 
 jobs:
-  # The Pi looks for a successful check run with exactly this name. Don't rename it.
   check:
     runs-on: ubuntu-latest
     steps:
@@ -41,7 +41,7 @@ jobs:
         run: |
           test -s public/index.html && test -s public/script.js && test -s public/styles.css
           node --check public/script.js
-          if find public -name '*.sh' -o -name '.*' -not -name public | grep -q .; then
+          if [ -n "$(find public -name '*.sh' -o -name '.*' -not -name public)" ]; then
             echo "::error::Scripts or dotfiles in the web root"; exit 1
           fi
       - name: No symlinks or submodules (the Pi refuses them)
@@ -49,11 +49,22 @@ jobs:
           if git ls-files -s | awk '$1 == "120000" || $1 == "160000" {f=1} END {exit !f}'; then
             echo "::error::Symlinks or submodules are not allowed"; exit 1
           fi
+      - name: No export rewriting via .gitattributes (the Pi ignores it anyway)
+        run: |
+          if git ls-files '*.gitattributes' | xargs -r grep -nE 'export-subst|export-ignore|filter=|ident'; then
+            echo "::error::.gitattributes must not use export-subst, export-ignore, filter or ident"; exit 1
+          fi
+      - name: Pi deploy scripts
+        run: |
+          bash -n deploy/pi/deploy-darkmatterits
+          bash -n deploy/pi/install.sh
+          systemd-analyze verify deploy/pi/deploy-darkmatterits.timer || true
+      - name: Compose allowlist (same check the Pi runs before compose reads the file)
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
+          python3 deploy/pi/darkmatterits-compose-check docker-compose.yml
       - name: Compose file check
         run: |
-          if grep -nE '\$|external|label_file|cache_(from|to)|ssh:|include:|extends:' docker-compose.yml; then
-            echo "::error::docker-compose.yml uses something the Pi's deploy refuses"; exit 1
-          fi
           touch mailer/.env
           docker compose -f docker-compose.yml config -q
       - name: nginx config check
