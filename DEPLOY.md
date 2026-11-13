@@ -49,10 +49,10 @@ The compose allowlist only permits the shapes this project uses, and requires th
 - every service has `read_only: true`, `cap_drop: [ALL]` and `security_opt: [no-new-privileges:true]`;
 - volumes are read-only `./src:/dst:ro` only, never `./.`, `.git` or anything named `.env*`;
 - `env_file` is exactly `./mailer/.env`; `container_name` starts with `darkmatter-`;
-- `image:` is on a pinned list (`nginxinc/nginx-unprivileged:1.27-alpine`), and only `darkmatter-site`
+- `image:` is on a pinned list (`nginxinc/nginx-unprivileged:1.27-alpine@sha256:...`, by digest), and only `darkmatter-site`
   publishes a port, exactly `10.50.0.3:8085:8080`;
 - no `$` anywhere, no top-level volumes/networks/include, no duplicate keys, at most 64 KB and 20 YAML aliases;
-- a built Dockerfile has one `FROM` on a pinned list (`node:24-alpine`) and no `--from`, `--mount`,
+- a built Dockerfile has one `FROM` on a pinned list (`node:24-alpine@sha256:...`, by digest) and no `--from`, `--mount`,
   `ONBUILD` or `# syntax=`-style directives, so a build can't read other projects' images on the Pi.
 
 To use something new in `docker-compose.yml` or `mailer/Dockerfile`, extend
@@ -64,6 +64,22 @@ above are what stop a build reading another project's image. A dedicated BuildKi
 (Cody's 2026-11-13 decision) is **not set up yet**: every way to run one on the Pi needs a privileged or
 seccomp/AppArmor-unconfined container, which secwatch and the Pi's no-privileged-containers rule refuse. The
 options are in `.claude/handoffs/builder-D3.md` (task D3) for Cody to choose.
+
+## Updating base images
+Both base images are pinned by digest (`name:tag@sha256:...`) because a tag can move, and a local image
+on the Pi tagged the same would win over the registry. The bare tag is refused by the allowlist.
+1. Look up the new multi-arch index digest (must include linux/arm64 for the Pi and linux/amd64 for CI):
+   get an anonymous token from `https://auth.docker.io/token?service=registry.docker.io&scope=repository:<repo>:pull`
+   (`<repo>` is `library/node` or `nginxinc/nginx-unprivileged`), then `HEAD`
+   `https://registry-1.docker.io/v2/<repo>/manifests/<tag>` with
+   `Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json`
+   and read `Docker-Content-Digest`.
+2. Change it in every place: `mailer/Dockerfile` (`FROM`), `docker-compose.yml` (`image:`),
+   `.github/workflows/check.yml` (nginx -t step), `PINNED_BASE_IMAGES` / `PINNED_IMAGES` in
+   `deploy/pi/darkmatterits-compose-check`, and the good test cases under `deploy/pi/test/`.
+3. Run `python deploy/pi/test/run-compose-cases.py`, then push as usual.
+4. Re-run the Pi install (see "One-time Pi setup") BEFORE the deploy that carries the new digest: the
+   allowlist on the Pi is a root-owned copy, so until it is re-installed it refuses the new digest.
 
 ## One-time Pi setup
 

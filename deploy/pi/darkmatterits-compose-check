@@ -44,10 +44,16 @@ MAX_BYTES = 64 * 1024          # the real file is ~1 KB; anything this big is no
 MAX_ALIASES = 20               # the real file uses 2 (*logging twice)
 ENV_FILE = "./mailer/.env"     # the only env_file allowed (kept on the Pi, never deployed)
 CONTAINER_PREFIX = "darkmatter-"
-PINNED_IMAGES = {"nginxinc/nginx-unprivileged:1.27-alpine"}
+# Base images are pinned by DIGEST (task D3b). A tag can move, and a local image on the Pi that
+# someone tagged `node:24-alpine` would be used instead of the registry's; a digest names exact
+# bytes, and the bare tag is refused. To update: look up the new multi-arch index digest, change
+# BOTH the file (docker-compose.yml / mailer/Dockerfile / .github/workflows/check.yml) and the
+# constant below, then re-run the Pi install so the root-owned copy of this file matches (DEPLOY.md,
+# "Updating base images").
+PINNED_IMAGES = {"nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0"}
 PORT_SERVICE = "darkmatter-site"            # the only service that may publish a port...
 PORTS = ["10.50.0.3:8085:8080"]             # ...and exactly this one (WireGuard address only)
-PINNED_BASE_IMAGES = {"node:24-alpine"}     # allowed `FROM` in a built Dockerfile
+PINNED_BASE_IMAGES = {"node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5"}     # allowed `FROM` in a built Dockerfile
 
 PATH_RE = re.compile(r"^\./[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")      # ./relative, no ..
 CPATH_RE = re.compile(r"^/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")      # absolute path in container
