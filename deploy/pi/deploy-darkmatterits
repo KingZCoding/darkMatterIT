@@ -12,10 +12,13 @@
 # Before anything is built: the commit may not contain symlinks or submodules; its .gitattributes
 # can't alter the export; docker-compose.yml (and the Dockerfiles it builds) must pass the
 # root-owned allowlist (darkmatterits-compose-check, under `timeout 60`, BEFORE compose reads it)
-# and then compose-guard. Files are copied with fixed modes (no setuid, nothing world-writable).
+# and then compose-guard; mailer/Dockerfile (the only Dockerfile compose builds) must be
+# byte-identical to the approved copy install.sh put on the Pi (deploy-darkmatterits-dockerfile-check,
+# D3-fix2). Files are copied with fixed modes (no setuid, nothing world-writable).
 # mailer/.env and the folder's .git are kept. Right before `docker compose up`,
 # deploy-darkmatterits-preup-check refuses symlinks in the folder, a root .env, or a
-# docker-compose.yml that differs from the checked copy.
+# docker-compose.yml that differs from the checked copy, and the approved-Dockerfile check runs
+# again on the live folder.
 set -Eeuo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export GIT_TERMINAL_PROMPT=0 HOME=/root
@@ -30,6 +33,11 @@ GIT_DIR=$STATE/repo.git
 STAGE=$STATE/stage
 DEST=/data/sites/newsite
 PROJECT=newsite
+# The one approved mailer Dockerfile (D3-fix2, Cody 2026-11-13 "Exact-match approved copy").
+# Installed root-owned (644) by install.sh; in /usr/local/sbin so secwatch's existing watch on
+# /usr/local/sbin/* reports any change made outside install.sh. A constant on purpose: nothing
+# (environment, systemd unit, the commit) can point the deploy at another file.
+APPROVED_DOCKERFILE=/usr/local/sbin/darkmatterits-mailer.Dockerfile
 COMPOSE=(docker compose --project-directory "$DEST" --project-name "$PROJECT" -f "$DEST/docker-compose.yml")
 
 sha=
@@ -144,6 +152,11 @@ timeout 60 darkmatterits-compose-check "$STAGE/docker-compose.yml" || fail "comp
 # 2) The Pi-wide guard on the resolved config.
 docker compose --project-directory "$DEST" --project-name "$PROJECT" -f "$STAGE/docker-compose.yml" \
   config --format json | compose-guard "$DEST" "$STAGE/docker-compose.yml" || fail "compose-guard refused"
+# 3) The Dockerfile compose will build must be the approved copy, byte for byte. The allowlist
+#    above is only a denylist for Dockerfile tricks; this is the gate that does not depend on
+#    parsing Dockerfiles the way BuildKit does (D3-fix2). Message tells Cody how to approve.
+deploy-darkmatterits-dockerfile-check "$STAGE" "$APPROVED_DOCKERFILE" \
+  || fail "mailer/Dockerfile differs from the approved copy on the Pi; re-run the Pi install from this commit to approve it"
 
 # --- Copy into place with fixed modes, then rebuild -----------------------------------------
 # --perms with --chmod=D755,F644 sets exact modes on every file (clears setuid/setgid/sticky and
@@ -154,6 +167,10 @@ rsync -rt --perms --chmod=D755,F644 --chown=admin:admin --delete --no-links --no
 # Last look at DEST right before compose reads it: no symlinks, no root .env, and the compose
 # file is the one that was checked (see deploy-darkmatterits-preup-check for why).
 deploy-darkmatterits-preup-check "$STAGE" "$DEST" || fail "pre-up check refused the project folder"
+# And the Dockerfile compose is about to read in DEST is still the approved one (same reason as
+# the compose-file comparison in the pre-up check: nothing may change it after the check).
+deploy-darkmatterits-dockerfile-check "$DEST" "$APPROVED_DOCKERFILE" \
+  || fail "mailer/Dockerfile in $DEST is not the approved copy right before compose up"
 
 # --force-recreate: the site's config and web root are bind mounts and rsync replaces files
 # (new inodes), so the site container must be recreated to see them.

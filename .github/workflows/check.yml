@@ -58,8 +58,10 @@ jobs:
         run: |
           bash -n deploy/pi/deploy-darkmatterits
           bash -n deploy/pi/deploy-darkmatterits-preup-check
+          bash -n deploy/pi/deploy-darkmatterits-dockerfile-check
           bash -n deploy/pi/install.sh
           bash -n deploy/pi/test/test-preup-check.sh
+          bash -n deploy/pi/test/test-dockerfile-approved.sh
           systemd-analyze verify deploy/pi/deploy-darkmatterits.timer || true
       - name: Compose allowlist (same check the Pi runs before compose reads the file)
         run: |
@@ -75,6 +77,12 @@ jobs:
         env:
           REQUIRE_SYMLINKS: "1"
         run: bash deploy/pi/test/test-preup-check.sh
+      # Task D3-fix2: the Pi builds only a mailer/Dockerfile byte-identical to its approved copy.
+      # REQUIRE_SYMLINKS=1: the symlink and case-spelling cases must run on Linux, never skip.
+      - name: Approved-Dockerfile gate tests
+        env:
+          REQUIRE_SYMLINKS: "1"
+        run: bash deploy/pi/test/test-dockerfile-approved.sh
       - name: Compose file check
         run: |
           touch mailer/.env

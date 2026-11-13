@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Approved-Dockerfile gate for the darkmatterits pull deploy (task D3-fix2, Cody 2026-11-13:
+# "Exact-match approved copy"). Run by deploy-darkmatterits as root, twice: on the root-only
+# stage right after the allowlist (before rsync), and on the live folder right before
+# `docker compose up`. Installed root-owned at /usr/local/sbin/deploy-darkmatterits-dockerfile-check;
+# the deploy uses that copy, never one from the commit.
+#
+#   deploy-darkmatterits-dockerfile-check PROJECT_DIR APPROVED_DOCKERFILE
+#       exit 0 = PROJECT_DIR/mailer/Dockerfile is the approved file, 1 = refused, 2 = usage
+#
+# Why: parsing every Dockerfile corner BuildKit accepts (heredocs, quoted flags, `//` directives,
+# continuation rules...) kept leaving holes (reviews of D3 and D3-fix1). So the Pi keeps ONE
+# approved mailer Dockerfile, put there only by deploy/pi/install.sh (which Cody runs by hand,
+# and which refuses a Dockerfile the denylist rejects), and a deploy builds only if the commit's
+# mailer/Dockerfile is byte-for-byte that file. The compose allowlist already makes
+# darkmatter-mailer with `build: ./mailer` the only build, so this covers every Dockerfile built.
+#
+# The approved path is an ARGUMENT, not a setting: deploy-darkmatterits passes its own hard-coded
+# constant (APPROVED_DOCKERFILE there), so no environment variable, systemd setting or file in
+# the commit can point the deploy at a different "approved" copy. The test
+# (deploy/pi/test/test-dockerfile-approved.sh) passes a stub path the same way.
+#
+# Refused: the approved copy missing or a symlink; mailer/ or mailer/Dockerfile missing, not a
+# regular file, or a symlink; any other `dockerfile` spelling in mailer/ (Docker's CLI falls
+# back to a lowercase `dockerfile` when `Dockerfile` is missing, so there must be exactly one
+# candidate); and any byte difference (`cmp -s`). Reads files only; no side effects.
+set -euo pipefail
+
+if [ "$#" != 2 ]; then
+  echo "usage: deploy-darkmatterits-dockerfile-check PROJECT_DIR APPROVED_DOCKERFILE" >&2
+  exit 2
+fi
+project=$1
+approved=$2
+mailer=$project/mailer
+
+refuse() { echo "dockerfile-check: $*" >&2; exit 1; }
+
+# -L first: -f and -d follow symlinks, and a link could point the comparison anywhere.
+if [ -L "$approved" ] || [ ! -f "$approved" ]; then
+  refuse "no approved Dockerfile at $approved (or it is not a plain file); run the Pi install (DEPLOY.md) to approve one"
+fi
+if [ -L "$mailer" ] || [ ! -d "$mailer" ]; then
+  refuse "$mailer is missing or not a plain folder"
+fi
+if [ -L "$mailer/Dockerfile" ] || [ ! -f "$mailer/Dockerfile" ]; then
+  refuse "$mailer/Dockerfile is missing or not a plain file"
+fi
+# Any other spelling (dockerfile, DOCKERFILE...) is a second candidate a builder might read.
+others=$(find "$mailer" -mindepth 1 -maxdepth 1 -iname dockerfile ! -name Dockerfile -print)
+if [ -n "$others" ]; then
+  refuse "other Dockerfile spellings in $mailer are not allowed: $(tr '\n' ' ' <<<"$others" | cut -c1-200)"
+fi
+if ! cmp -s -- "$mailer/Dockerfile" "$approved"; then
+  refuse "mailer/Dockerfile differs from the approved copy on the Pi ($approved); re-run the Pi install from this commit to approve it (DEPLOY.md)"
+fi
+echo "dockerfile-check: ok (mailer/Dockerfile matches the approved copy)"
