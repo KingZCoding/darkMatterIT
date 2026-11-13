@@ -95,8 +95,12 @@ d=$(ssh pi 'mktemp -d') && scp deploy/pi/install.sh deploy/pi/deploy-darkmatteri
 git checkout -- mailer/Dockerfile
 ```
 
-The install's first check will then refuse `main` (its Dockerfile is no longer the approved one); that is
-expected. Then run the rollback. To go forward again, re-run the install from the newest `main`.
+The install's first check (a normal deploy of `main`) refuses `main` only if `main` is not live yet (its
+Dockerfile is no longer the approved one); if `main` is already live it just exits "already live", before the
+Dockerfile gate, and nothing is refused. Either is expected. Then run the rollback. After a successful
+`sudo deploy-darkmatterits --now <commit>` the rollback pin holds until `main` moves, so nothing deploys
+`main` by itself. To go forward again, re-run the install from the newest `main` (so the approved copy is
+`main`'s Dockerfile again) AND THEN run `sudo deploy-darkmatterits --now`, or wait for a new commit on `main`.
 `mailer/Dockerfile` has not changed since 6c32cad, so today no rollback needs this.
 
 Builds still use the Pi's default builder, which can see every local image on the Pi; the approved-copy rule

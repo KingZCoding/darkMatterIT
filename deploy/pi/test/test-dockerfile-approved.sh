@@ -100,6 +100,20 @@ out=$(bash "$check" "$tmp/project" 2>&1); code=$?
 if [ "$code" = 2 ]; then echo "PASS  wrong argument count is a usage error"; passed=$((passed + 1))
 else echo "FAIL  wrong argument count (exit $code)"; failed=$((failed + 1)); fi
 
+# Install order (D3-fix3): install.sh must put the approved copy in BEFORE the new deploy script,
+# so a deploy timer firing mid-install never runs the new script without an approved copy.
+# Only meaningful for the repo's own install.sh (it sits one folder above this script's folder).
+install_sh=$here/../install.sh
+if [ -f "$install_sh" ]; then
+  approved_line=$(grep -n 'install -m 644 .*"\$SRC/Dockerfile" "\$APPROVED_DOCKERFILE"' "$install_sh" | head -1 | cut -d: -f1)
+  script_line=$(grep -n 'install -m 750 .*"\$SRC/deploy-darkmatterits" /usr/local/sbin/deploy-darkmatterits$' "$install_sh" | head -1 | cut -d: -f1)
+  if [ -n "$approved_line" ] && [ -n "$script_line" ] && [ "$approved_line" -lt "$script_line" ]; then
+    echo "PASS  install.sh installs the approved Dockerfile before the deploy script"; passed=$((passed + 1))
+  else
+    echo "FAIL  install.sh install order (approved copy line '$approved_line', deploy script line '$script_line')"; failed=$((failed + 1))
+  fi
+fi
+
 echo
 echo "$passed/$((passed + failed)) approved-Dockerfile cases behaved as expected, $skipped skipped"
 if [ "$skipped" != 0 ] && [ "${REQUIRE_SYMLINKS:-0}" = 1 ]; then

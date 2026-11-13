@@ -75,11 +75,10 @@ if systemctl is-active --quiet secwatch.timer; then
   SECWATCH_PAUSED=1
 fi
 
-echo "== Install deploy script, compose allowlist, pre-up check, Dockerfile gate and timer"
-install -m 750 -o root -g root "$SRC/deploy-darkmatterits" /usr/local/sbin/deploy-darkmatterits
-install -m 755 -o root -g root "$SRC/darkmatterits-compose-check" /usr/local/sbin/darkmatterits-compose-check
-install -m 750 -o root -g root "$SRC/deploy-darkmatterits-preup-check" /usr/local/sbin/deploy-darkmatterits-preup-check
-install -m 750 -o root -g root "$SRC/deploy-darkmatterits-dockerfile-check" /usr/local/sbin/deploy-darkmatterits-dockerfile-check
+# Order matters: the approved Dockerfile copy goes in BEFORE the new deploy script. The deploy timer is
+# not stopped during an install, so if it fires mid-install the new script must already find an approved
+# copy; otherwise it would refuse ("no approved Dockerfile") and mark main failed, and that mark could land
+# after the `rm -f failed` below and stick. (test-dockerfile-approved.sh asserts this order.)
 echo "== Approve mailer/Dockerfile ($APPROVED_DOCKERFILE)"
 if ! cmp -s -- "$SRC/Dockerfile" "$APPROVED_DOCKERFILE"; then
   # A newly approved Dockerfile is exactly what can make the commit that last failed deployable
@@ -88,6 +87,11 @@ if ! cmp -s -- "$SRC/Dockerfile" "$APPROVED_DOCKERFILE"; then
 fi
 install -m 644 -o root -g root "$SRC/Dockerfile" "$APPROVED_DOCKERFILE"
 sha256sum "$APPROVED_DOCKERFILE"
+echo "== Install deploy script, compose allowlist, pre-up check, Dockerfile gate and timer"
+install -m 750 -o root -g root "$SRC/deploy-darkmatterits" /usr/local/sbin/deploy-darkmatterits
+install -m 755 -o root -g root "$SRC/darkmatterits-compose-check" /usr/local/sbin/darkmatterits-compose-check
+install -m 750 -o root -g root "$SRC/deploy-darkmatterits-preup-check" /usr/local/sbin/deploy-darkmatterits-preup-check
+install -m 750 -o root -g root "$SRC/deploy-darkmatterits-dockerfile-check" /usr/local/sbin/deploy-darkmatterits-dockerfile-check
 install -m 644 -o root -g root "$SRC/deploy-darkmatterits.service" /etc/systemd/system/deploy-darkmatterits.service
 install -m 644 -o root -g root "$SRC/deploy-darkmatterits.timer" /etc/systemd/system/deploy-darkmatterits.timer
 systemctl daemon-reload
