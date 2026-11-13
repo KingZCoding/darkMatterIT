@@ -1,0 +1,48 @@
+# D3 test case (bad): ./. mounts the whole project.
+# expect: volumes: './.:/proj:ro' is not allowed
+# Copy of the real docker-compose.yml with that one change; run by deploy/pi/test/run-compose-cases.py.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  darkmatter-site:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    container_name: darkmatter-site
+    restart: unless-stopped
+    ports:
+      - "10.50.0.3:8085:8080"
+    volumes:
+      - ./public:/usr/share/nginx/html:ro
+      - ./.:/proj:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - darkmatter-mailer
+    logging: *logging
+
+  darkmatter-mailer:
+    build: ./mailer
+    container_name: darkmatter-mailer
+    restart: unless-stopped
+    env_file:
+      - ./mailer/.env
+    environment:
+      NODE_ENV: production
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging

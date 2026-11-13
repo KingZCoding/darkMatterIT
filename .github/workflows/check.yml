@@ -57,12 +57,24 @@ jobs:
       - name: Pi deploy scripts
         run: |
           bash -n deploy/pi/deploy-darkmatterits
+          bash -n deploy/pi/deploy-darkmatterits-preup-check
           bash -n deploy/pi/install.sh
+          bash -n deploy/pi/test/test-preup-check.sh
           systemd-analyze verify deploy/pi/deploy-darkmatterits.timer || true
       - name: Compose allowlist (same check the Pi runs before compose reads the file)
         run: |
           python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
           python3 deploy/pi/darkmatterits-compose-check docker-compose.yml
+      # Task D3: every allowlist rule has a case that must pass and one that must be refused
+      # for the right reason (deploy/pi/test/compose-cases, dockerfile-cases).
+      - name: Compose allowlist test cases
+        run: python3 deploy/pi/test/run-compose-cases.py
+      # Task D3: the Pi's last check before `compose up` (symlinks, root .env, changed compose).
+      # REQUIRE_SYMLINKS=1: on Linux the symlink cases must run, never skip.
+      - name: Pre-up folder check tests
+        env:
+          REQUIRE_SYMLINKS: "1"
+        run: bash deploy/pi/test/test-preup-check.sh
       - name: Compose file check
         run: |
           touch mailer/.env
