@@ -371,7 +371,7 @@ ol {
   white-space: nowrap;
   margin-top: 3px;
   color: var(--accent-soft);
-  font-size: 0.875rem; /* 14px floor; tighter tracking keeps the header on one row at 375px */
+  font-size: 0.875rem; /* 14px floor; narrower phones tighten the tracking (see "Narrow phones") */
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -479,8 +479,7 @@ ol {
   position: fixed;
   inset: var(--header-h) 0 0 0;
   z-index: 1;
-  background: rgba(3, 5, 12, 0.6);
-  animation: fade-in 0.25s ease both;
+  background: rgba(3, 5, 12, 0.6); /* appears at once: no fade, so it never waits on an animation */
   cursor: default;
 }
 .mobile-panel {
@@ -579,6 +578,56 @@ ol {
   margin-top: 14px;
   padding-top: 14px;
   border-top: 1px solid var(--line);
+}
+
+/* Phones under 480px: the menu's Contact and Call buttons stack in one column, so the full phone
+   number fits inside its button with its padding (side by side it is too tight below about 480px). */
+@media (max-width: 479px) {
+  .mobile-cta {
+    grid-template-columns: 1fr;
+  }
+}
+/* Narrow phones. The header stays on one row from 320px up, with at least 8px between the brand
+   text and the buttons (the brand words never wrap, so the space has to come from somewhere else).
+   Under 400px: tighter tracking and gaps in the header. Under 375px the Menu button also shows only
+   its three bars; the word "Menu" stays in the page for screen readers (clipped, not removed), so the
+   button keeps its name. */
+@media (max-width: 399px) {
+  .header-row {
+    gap: 8px;
+  }
+  .brand {
+    gap: 8px;
+  }
+  .brand-name {
+    letter-spacing: 0.02em;
+  }
+  .brand-sub {
+    letter-spacing: 0.04em;
+  }
+  .header-actions {
+    gap: 6px;
+  }
+  .menu-btn {
+    gap: 8px;
+    padding: 0 12px;
+  }
+}
+@media (max-width: 374px) {
+  .menu-btn {
+    justify-content: center;
+    width: 44px;
+    padding: 0;
+  }
+  .menu-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 
 /* Wide screens: the inline nav. Hidden on phones, where the Menu button holds the same links. */
@@ -708,7 +757,8 @@ ol {
   gap: 32px;
   align-items: center;
 }
-/* The hero text rises in on load, one line after another (no JavaScript needed). */
+/* The hero text slides up into place on load, one line after another (no JavaScript needed). It is
+   fully visible from the first frame: the rise keyframes move it and never fade it. */
 .hero-copy > *,
 .service-hero > * {
   animation: rise 0.8s var(--ease) both;
@@ -1554,29 +1604,24 @@ select option {
 }
 
 /* ---------------------------------------------------------------- Keyframes */
+/* Entrance keyframes move things only; they never touch opacity or visibility. Text, menus and
+   icons are fully visible at rest, so a paused, throttled or skipped animation (a hidden tab, a
+   screenshot tool, a slow phone) can never leave them blank. site-tests/motion.test.mjs fails
+   if any keyframe starts hidden. */
 @keyframes rise {
   from {
-    opacity: 0;
     transform: translateY(16px);
   }
   to {
-    opacity: 1;
     transform: none;
   }
 }
 @keyframes drop-in {
   from {
-    opacity: 0;
     transform: translateY(-10px);
   }
   to {
-    opacity: 1;
     transform: none;
-  }
-}
-@keyframes fade-in {
-  from {
-    opacity: 0;
   }
 }
 @keyframes float {
