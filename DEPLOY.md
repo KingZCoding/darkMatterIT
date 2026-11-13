@@ -115,10 +115,13 @@ A commit that failed to deploy is not retried automatically; push a fix, or use 
 A rollback stays in place until a new commit lands on main (or you run `--now` without a commit).
 If the rollback deploy fails, it is not held: the timer goes back to deploying main.
 
-**You can only roll back to a commit whose compose file passes today's allowlist.** The Pi checks the old
-commit with the allowlist it has installed now, not the one from back then. Commits from 6c32cad onward pass;
-fe07fe1, 770582e and everything older are refused (`nginx:alpine`, port `8085:80`, no read-only hardening),
-so `--now` on them fails without touching the running site.
+**You can only roll back to a commit whose `docker-compose.yml` and `mailer/Dockerfile` pass today's allowlist.**
+The Pi checks the old commit with the allowlist it has installed now, not the one from back then. Since the
+base images were pinned by digest (cf23583), that means cf23583 and later. Commits from 6c32cad up to
+cf23583's parent (a4d2157) are refused too: they use bare image tags (`nginxinc/nginx-unprivileged:1.27-alpine`,
+`FROM node:24-alpine`), which are not on the pinned list. fe07fe1, 770582e and everything older are refused
+(`nginx:alpine`, port `8085:80`, no read-only hardening). In every refused case `--now` fails without touching
+the running site.
 
 ## Old method (removed)
 
