@@ -55,8 +55,11 @@ def run_case(check: str, compose_text: str, dockerfile_text: str) -> tuple[int, 
         with open(os.path.join(tmp, "mailer", "Dockerfile"), "w", encoding="utf-8", newline="\n") as f:
             f.write(dockerfile_text)
         start = time.monotonic()
-        p = subprocess.run([sys.executable, check, os.path.join(tmp, "docker-compose.yml")],
-                           capture_output=True, text=True, timeout=60)
+        try:
+            p = subprocess.run([sys.executable, check, os.path.join(tmp, "docker-compose.yml")],
+                               capture_output=True, text=True, timeout=TIME_LIMIT * 3)
+        except subprocess.TimeoutExpired:   # e.g. an alias bomb being expanded: a failure, not a crash
+            return 124, "timed out", time.monotonic() - start
         return p.returncode, p.stdout + p.stderr, time.monotonic() - start
 
 
