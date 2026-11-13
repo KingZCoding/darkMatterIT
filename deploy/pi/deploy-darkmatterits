@@ -10,9 +10,12 @@
 # what is on GitHub's main. No runner, no sudo rule, nothing in the Actions logs.
 #
 # Before anything is built: the commit may not contain symlinks or submodules; its .gitattributes
-# can't alter the export; docker-compose.yml must pass the root-owned allowlist
-# (darkmatterits-compose-check, BEFORE compose reads it) and then compose-guard. Files are copied
-# with fixed modes (no setuid, nothing world-writable). mailer/.env and the folder's .git are kept.
+# can't alter the export; docker-compose.yml (and the Dockerfiles it builds) must pass the
+# root-owned allowlist (darkmatterits-compose-check, under `timeout 60`, BEFORE compose reads it)
+# and then compose-guard. Files are copied with fixed modes (no setuid, nothing world-writable).
+# mailer/.env and the folder's .git are kept. Right before `docker compose up`,
+# deploy-darkmatterits-preup-check refuses symlinks in the folder, a root .env, or a
+# docker-compose.yml that differs from the checked copy.
 set -Eeuo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export GIT_TERMINAL_PROMPT=0 HOME=/root
@@ -32,9 +35,17 @@ COMPOSE=(docker compose --project-directory "$DEST" --project-name "$PROJECT" -f
 sha=
 log() { echo "$*"; logger -t deploy-darkmatterits -- "$*"; }
 # A deploy failure is sticky for that commit: the timer won't rebuild it every 5 minutes.
-fail() { trap - ERR; log "FAILED ${sha:0:12}: $*"; if [ -n "$sha" ]; then echo "$sha" > "$STATE/failed"; fi; exit 1; }
+# A failed `--now` also drops any rollback pin: the folder may be half-applied, so the timer must
+# be free to put main back (main itself is skipped only if it is the commit that just failed).
+fail() {
+  trap - ERR
+  log "FAILED ${sha:0:12}: $*"
+  if [ -n "$sha" ]; then echo "$sha" > "$STATE/failed"; fi
+  if [ "$now" = 1 ]; then rm -f "$STATE/pinned"; fi
+  exit 1
+}
 
-now=0; want=
+now=0; want=; pin_to=
 case "${1:-}" in
   --now) now=1; want=${2:-} ;;
   "") ;;
@@ -68,8 +79,9 @@ if [ "$now" = 1 ]; then
   else
     sha=$main
   fi
-  # A rollback holds until main moves past the commit it was taken on.
-  if [ "$sha" != "$main" ]; then echo "$main" > "$STATE/pinned"; else rm -f "$STATE/pinned"; fi
+  # A rollback holds until main moves past the commit it was taken on. The pin is written only
+  # after the deploy succeeds (bottom of this file), so a failed rollback never holds.
+  if [ "$sha" != "$main" ]; then pin_to=$main; fi
 else
   sha=$main
   if [ -f "$STATE/pinned" ]; then
@@ -126,7 +138,9 @@ git --git-dir="$GIT_DIR" archive --format=tar "$sha" | tar -x -C "$STAGE" --no-s
 
 # --- Check the compose file is safe to run as root ------------------------------------------
 # 1) Strict allowlist on the parsed file, before docker compose reads it at all.
-darkmatterits-compose-check "$STAGE/docker-compose.yml" || fail "compose allowlist refused the file"
+#    `timeout 60`: a file that makes the parser hang becomes a recorded failure, not a 20-minute
+#    root process repeated every tick.
+timeout 60 darkmatterits-compose-check "$STAGE/docker-compose.yml" || fail "compose allowlist refused the file (or timed out)"
 # 2) The Pi-wide guard on the resolved config.
 docker compose --project-directory "$DEST" --project-name "$PROJECT" -f "$STAGE/docker-compose.yml" \
   config --format json | compose-guard "$DEST" "$STAGE/docker-compose.yml" || fail "compose-guard refused"
@@ -136,6 +150,10 @@ docker compose --project-directory "$DEST" --project-name "$PROJECT" -f "$STAGE/
 # any group/world write); --chown makes it all admin's, like the other site folders.
 rsync -rt --perms --chmod=D755,F644 --chown=admin:admin --delete --no-links --no-specials --no-devices \
   --exclude /.git --exclude .env -- "$STAGE/" "$DEST/"
+
+# Last look at DEST right before compose reads it: no symlinks, no root .env, and the compose
+# file is the one that was checked (see deploy-darkmatterits-preup-check for why).
+deploy-darkmatterits-preup-check "$STAGE" "$DEST" || fail "pre-up check refused the project folder"
 
 # --force-recreate: the site's config and web root are bind mounts and rsync replaces files
 # (new inodes), so the site container must be recreated to see them.
@@ -169,6 +187,11 @@ curl -fsS -o /dev/null --max-time 10 http://10.50.0.3:8085/ || fail "site did no
 trap - ERR
 echo "$sha" > "$STATE/deployed"
 rm -f "$STATE/failed" "$STATE/ci_failed"
+# Rollback pin, only now that the deploy is good: `--now <older sha>` holds until main moves;
+# `--now` on main itself clears any earlier pin.
+if [ "$now" = 1 ]; then
+  if [ -n "$pin_to" ]; then echo "$pin_to" > "$STATE/pinned"; else rm -f "$STATE/pinned"; fi
+fi
 # Only this project's dangling images (keeps other projects' rollback images).
 docker image prune -f --filter "label=com.docker.compose.project=$PROJECT" >/dev/null || true
 log "deployed ${sha:0:12}"

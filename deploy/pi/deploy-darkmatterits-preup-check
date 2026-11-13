@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Last checks on the live project folder, run by deploy-darkmatterits as root immediately before
+# `docker compose up`. Installed root-owned at /usr/local/sbin/deploy-darkmatterits-preup-check;
+# the deploy uses that copy, never one from the commit. Kept as its own small file so CI can
+# test it without Docker (deploy/pi/test/test-preup-check.sh).
+#
+#   deploy-darkmatterits-preup-check STAGE DEST     exit 0 = safe to run compose, 1 = refused, 2 = usage
+#
+# Why (audit 2026-11-13, task D3): between the allowlist check and `docker compose up`, something
+# with write access to DEST (a running container, before read-only mounts were required) could
+# swap a path for a symlink - a bind mount follows it, so `./x:/y` became the host's `/` - or
+# rewrite docker-compose.yml after it was checked. So, right before compose reads DEST:
+#   1. no symlink anywhere in DEST (the folder's own .git is skipped: it is not deployed or mounted);
+#   2. DEST/docker-compose.yml is byte-for-byte the file the allowlist and compose-guard passed;
+#   3. no DEST/.env: compose reads COMPOSE_* settings (project name, files, profiles) from the
+#      project folder's .env. mailer/.env is the only .env allowed, and it is not at the root.
+set -euo pipefail
+
+if [ "$#" != 2 ]; then
+  echo "usage: deploy-darkmatterits-preup-check STAGE DEST" >&2
+  exit 2
+fi
+stage=$1
+dest=$2
+problems=()
+
+# 1. Symlinks. -prune skips DEST/.git itself; -type l never follows links, so a link to / is
+#    reported, not walked.
+links=$(find "$dest" -path "$dest/.git" -prune -o -type l -print)
+if [ -n "$links" ]; then
+  problems+=("symlinks in $dest: $(tr '\n' ' ' <<<"$links" | cut -c1-300)")
+fi
+
+# 2. The compose file compose will read is the one that was checked.
+if ! cmp -s -- "$stage/docker-compose.yml" "$dest/docker-compose.yml"; then
+  problems+=("$dest/docker-compose.yml differs from the checked copy in $stage")
+fi
+
+# 3. A root .env of any kind (file, folder or dangling link) is refused.
+if [ -e "$dest/.env" ] || [ -L "$dest/.env" ]; then
+  problems+=("$dest/.env exists; compose would read COMPOSE_* settings from it - remove it")
+fi
+
+if [ "${#problems[@]}" != 0 ]; then
+  for p in "${problems[@]}"; do echo "preup-check: $p" >&2; done
+  exit 1
+fi
+echo "preup-check: ok"
