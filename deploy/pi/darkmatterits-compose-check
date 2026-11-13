@@ -19,11 +19,13 @@ Before touching it, know why each rule exists (audit 2026-11-13, task D3):
     between its checks and `docker compose up` (that was root on the Pi).
   * env_file is only ./mailer/.env (the one secret file the Pi keeps).
   * container_name, image and ports are pinned so this project can't claim another project's
-    container name, run another project's local image or grab another port.
+    container name, run another project's local image or grab another port. Both base images
+    (the site's `image:` and the mailer's `FROM`) are pinned by sha256 digest; the bare tag is
+    refused (task D3b).
   * The parse refuses duplicate keys (compose's yaml.v3 refuses them too; we don't rely on
     that), files over 64 KB, and more than MAX_ALIASES alias events (a "billion laughs" file
     would otherwise keep this root process busy for minutes).
-  * Each `build:` folder's Dockerfile must have one FROM on a pinned list and no --from,
+  * Each `build:` folder's Dockerfile must have one FROM on the pinned (digest) list and no --from,
     --mount, parser directives or ONBUILD, so a build can't read other projects' local images
     from the Pi's shared image store (interim fix for the audit's MEDIUM; see DEPLOY.md and
     the D3 handoff for the dedicated-builder decision that is still open).
@@ -54,10 +56,17 @@ MAX_BYTES = 64 * 1024          # the real file is ~1 KB; anything this big is no
 MAX_ALIASES = 20               # the real file uses 2 (*logging twice)
 ENV_FILE = "./mailer/.env"     # the only env_file allowed (kept on the Pi, never deployed)
 CONTAINER_PREFIX = "darkmatter-"
-PINNED_IMAGES = {"nginxinc/nginx-unprivileged:1.27-alpine"}
+# Base images are pinned by DIGEST (task D3b). A tag can move, and a local image on the Pi that
+# someone tagged `node:24-alpine` would be used instead of the registry's; a digest names exact
+# bytes, and the bare tag is refused. To update: look up the new multi-arch index digest, change
+# BOTH the file (docker-compose.yml / mailer/Dockerfile / .github/workflows/check.yml) and the
+# constant below, then re-run the Pi install so the root-owned copy of this file matches AND the
+# changed mailer/Dockerfile becomes the Pi's approved copy (the FROM line is part of the bytes the
+# deploy compares, D3-fix2); see DEPLOY.md, "Updating base images".
+PINNED_IMAGES = {"nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0"}
 PORT_SERVICE = "darkmatter-site"            # the only service that may publish a port...
 PORTS = ["10.50.0.3:8085:8080"]             # ...and exactly this one (WireGuard address only)
-PINNED_BASE_IMAGES = {"node:24-alpine"}     # allowed `FROM` in a built Dockerfile
+PINNED_BASE_IMAGES = {"node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5"}     # allowed `FROM` in a built Dockerfile
 BUILD_SERVICE = "darkmatter-mailer"         # the only service that may have `build:`...
 BUILD_DIR = "./mailer"                      # ...and exactly this plain folder (the Pi compares
                                             # its Dockerfile to the approved copy, D3-fix2)

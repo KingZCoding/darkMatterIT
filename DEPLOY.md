@@ -52,12 +52,12 @@ The compose allowlist only permits the shapes this project uses, and requires th
 - every service has `read_only: true`, `cap_drop: [ALL]` and `security_opt: [no-new-privileges:true]`;
 - volumes are read-only `./src:/dst:ro` only, never `./.`, `.git` or anything named `.env*`;
 - `env_file` is exactly `./mailer/.env`; `container_name` starts with `darkmatter-`;
-- `image:` is on a pinned list (`nginxinc/nginx-unprivileged:1.27-alpine`), and only `darkmatter-site`
+- `image:` is on a pinned list (`nginxinc/nginx-unprivileged:1.27-alpine@sha256:...`, by digest), and only `darkmatter-site`
   publishes a port, exactly `10.50.0.3:8085:8080`;
 - no `$` anywhere, no top-level volumes/networks/include, no duplicate keys, at most 64 KB and 20 YAML aliases;
 - exactly one service builds: `darkmatter-mailer`, with `build: ./mailer` (a plain folder, no `dockerfile:`
   or other options), so `mailer/Dockerfile` is the only Dockerfile compose reads;
-- that Dockerfile has one `FROM` on a pinned list (`node:24-alpine`) and no `--from`, `--mount`,
+- that Dockerfile has one `FROM` on a pinned list (`node:24-alpine@sha256:...`, by digest) and no `--from`, `--mount`,
   `ONBUILD` or `# syntax=`-style directives, so a build can't read other projects' images on the Pi.
   The Dockerfile must also be plain printable ASCII (tabs and LF or CRLF line ends allowed): no byte-order
   mark, no Unicode spaces or other non-ASCII characters, no control characters such as form feed, no lone
@@ -101,13 +101,39 @@ Dockerfile gate, and nothing is refused. Either is expected. Then run the rollba
 `sudo deploy-darkmatterits --now <commit>` the rollback pin holds until `main` moves, so nothing deploys
 `main` by itself. To go forward again, re-run the install from the newest `main` (so the approved copy is
 `main`'s Dockerfile again) AND THEN run `sudo deploy-darkmatterits --now`, or wait for a new commit on `main`.
-`mailer/Dockerfile` has not changed since 6c32cad, so today no rollback needs this.
+Every commit that passes today's allowlist (see "You can only roll back" below) has the same digest-pinned
+`mailer/Dockerfile` as the approved copy, so today no rollback needs this. (Older Dockerfiles use the bare
+`FROM node:24-alpine`, which the install's denylist check refuses to approve anyway.)
 
 Builds still use the Pi's default builder, which can see every local image on the Pi; the approved-copy rule
 and the Dockerfile rules above are what stop a build reading another project's image. A dedicated BuildKit builder for this project
 (Cody's 2026-11-13 decision) is **not set up yet**: every way to run one on the Pi needs a privileged or
 seccomp/AppArmor-unconfined container, which secwatch and the Pi's no-privileged-containers rule refuse. The
 options are in `.claude/handoffs/builder-D3.md` (task D3) for Cody to choose.
+
+## Updating base images
+Both base images are pinned by digest (`name:tag@sha256:...`) because a tag can move, and a local image
+on the Pi tagged the same would win over the registry. The bare tag is refused by the allowlist.
+1. Look up the new multi-arch index digest (must include linux/arm64 for the Pi and linux/amd64 for CI):
+   get an anonymous token from `https://auth.docker.io/token?service=registry.docker.io&scope=repository:<repo>:pull`
+   (`<repo>` is `library/node` or `nginxinc/nginx-unprivileged`), then `HEAD`
+   `https://registry-1.docker.io/v2/<repo>/manifests/<tag>` with
+   `Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json`
+   and read `Docker-Content-Digest`.
+2. Change it in every place: `mailer/Dockerfile` (`FROM`), `docker-compose.yml` (`image:`),
+   `.github/workflows/check.yml` (nginx -t step), `PINNED_BASE_IMAGES` / `PINNED_IMAGES` in
+   `deploy/pi/darkmatterits-compose-check`, and every test case under `deploy/pi/test/compose-cases/` and
+   `deploy/pi/test/dockerfile-cases/` that uses the pinned reference (all good cases, and every bad case whose
+   intended refusal is NOT the image; otherwise those bad cases are refused for the wrong reason and fail).
+3. Run `python deploy/pi/test/run-compose-cases.py` and `bash deploy/pi/test/test-dockerfile-approved.sh`,
+   then merge to `main` as usual.
+4. The Pi refuses that commit until its install is re-run (the live site keeps running): the allowlist on the
+   Pi is a root-owned copy, so it refuses the new digest, and when the `FROM` line changed, `mailer/Dockerfile`
+   no longer matches the Pi's approved copy either (journal: "mailer/Dockerfile differs from the approved copy
+   on the Pi"). Re-run the one-time Pi setup below from a clean checkout of that exact `main` commit, as in
+   "Changing the mailer Dockerfile" step 3: it installs the new allowlist, approves the new Dockerfile and runs
+   a first check, which deploys it. Do not run the install from a branch before the merge: it would approve a
+   Dockerfile that the live `main` does not have.
 
 ## One-time Pi setup
 
@@ -147,11 +173,17 @@ A commit that failed to deploy is not retried automatically; push a fix, or use 
 A rollback stays in place until a new commit lands on main (or you run `--now` without a commit).
 If the rollback deploy fails, it is not held: the timer goes back to deploying main.
 
-**You can only roll back to a commit whose compose file passes today's allowlist** and whose
-`mailer/Dockerfile` matches the approved copy (see "Changing the mailer Dockerfile" for approving an older one). The Pi checks the
-old commit with the allowlist it has installed now, not the one from back then. Commits from 6c32cad onward pass;
-fe07fe1, 770582e and everything older are refused (`nginx:alpine`, port `8085:80`, no read-only hardening),
-so `--now` on them fails without touching the running site.
+**You can only roll back to a commit whose `docker-compose.yml` and `mailer/Dockerfile` pass today's allowlist**
+and whose `mailer/Dockerfile` matches the approved copy (see "Changing the mailer Dockerfile" for approving an
+older one). The Pi checks the old commit with the allowlist it has installed now, not the one from back then.
+Since the base images were pinned by digest (task D3b), the only commits on `main` that pass are cf23583 and
+392bfaa (task D3b's own commits, which reached `main` through the merge that brought D3b in after task D3), that
+merge commit, and everything after it. Every other commit is refused, so `--now` on it fails without touching the
+running site:
+- 6c32cad up to 44c596e (the last commit before that merge), which includes every commit of task D3
+  (867cad8 to 44c596e): they use bare image tags (`nginxinc/nginx-unprivileged:1.27-alpine`,
+  `FROM node:24-alpine`), which are not on the pinned list;
+- fe07fe1, 770582e and everything older: `nginx:alpine`, port `8085:80`, no read-only hardening.
 
 ## Old method (removed)
 

@@ -44,7 +44,7 @@ bash -n "$SRC/deploy-darkmatterits"
 bash -n "$SRC/deploy-darkmatterits-preup-check"
 bash -n "$SRC/deploy-darkmatterits-dockerfile-check"
 python3 -I -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$SRC/darkmatterits-compose-check"
-# Never approve a Dockerfile the denylist rejects (one FROM node:24-alpine, no --from/--mount,
+# Never approve a Dockerfile the denylist rejects (one FROM, node:24-alpine pinned by digest, no --from/--mount,
 # heredocs, directives...): the approved copy is what the deploy trusts on the Pi.
 python3 -I "$SRC/darkmatterits-compose-check" --dockerfile "$SRC/Dockerfile" \
   || { echo "refusing to approve this mailer/Dockerfile (see above)" >&2; exit 1; }
