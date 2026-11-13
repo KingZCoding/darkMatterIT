@@ -11,6 +11,8 @@
 //   4. The support form on /contact/: checks the fields the same way the server does, then posts JSON
 //      to POST /api/support. The submit button ships disabled and is enabled here, so the form is
 //      never sent without JavaScript.
+//   5. Scroll reveal: .reveal blocks fade up as they come into view. Content is only hidden once
+//      this script runs and can watch the page, so with no JavaScript everything simply shows.
 //
 // Security: this file never parses or writes HTML; text reaches the page through textContent only.
 // Server replies are never shown as-is: only our own messages, picked by error code.
@@ -191,4 +193,25 @@ if (form) {
   // cannot do a plain browser submit. Enable it only now that the JSON handler above is attached.
   const sendBtn = form.querySelector('button[type="submit"]');
   if (sendBtn) sendBtn.disabled = false;
+}
+
+// ---------------------------------------------------------------- 5. Scroll reveal
+// Skipped when the browser has no IntersectionObserver or the visitor asked for less motion: the
+// .js-reveal class is never added, so the blocks stay visible as plain content.
+const revealBlocks = document.querySelectorAll('.reveal');
+const wantsLessMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+if (revealBlocks.length > 0 && 'IntersectionObserver' in window && !wantsLessMotion) {
+  document.documentElement.classList.add('js-reveal');
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add('is-in');
+        observer.unobserve(entry.target); // reveal once; scrolling back up never hides it again
+      });
+    },
+    { rootMargin: '0px 0px -8% 0px', threshold: 0.12 },
+  );
+  revealBlocks.forEach((block) => observer.observe(block));
 }
