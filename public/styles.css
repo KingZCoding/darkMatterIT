@@ -1280,7 +1280,7 @@ ol {
   align-items: start;
 }
 /* Each contact row: icon | label + Copy button, with the value on its own full-width line below, so
-   a long email address never breaks mid-word on a phone. .kv-body uses display: contents so its label
+   a long value never breaks mid-word on a phone. .kv-body uses display: contents so its label
    and value sit directly in the row's grid. */
 .kv {
   display: grid;
