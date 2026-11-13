@@ -3,6 +3,8 @@
 # deploy/pi/darkmatterits-compose-check (then compose-guard) before compose reads it. The allowlist
 # requires read_only, cap_drop ALL and no-new-privileges on every service, read-only ./src:/dst:ro
 # mounts only, env_file ./mailer/.env only, the pinned image, and the one port 10.50.0.3:8085:8080.
+# Only darkmatter-mailer may build, with exactly `build: ./mailer`; the Pi builds it only if
+# mailer/Dockerfile is byte-identical to its approved copy (DEPLOY.md, "Changing the mailer Dockerfile").
 # Changing any of that means changing the allowlist and its tests (deploy/pi/test/) on purpose.
 
 x-logging: &logging
