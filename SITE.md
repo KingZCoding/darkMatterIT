@@ -109,7 +109,7 @@ tags or `<address>` markup. The business is listed as a service-area business on
 |---|---|
 | `/img/logo-mark.webp` | logo, 128x128 WebP (header/footer logo inside `<picture>`) |
 | `/img/icons.svg` | icon sprite drawn for this site: one `<symbol id="i-...">` per icon (services, phone, mail, pin, globe, user, tag, send, arrow). Pages use `<svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=...#i-name"></use></svg>`; strokes use `currentColor`. Versioned like the stylesheet (section 12a) |
-| `/icons/icon-512.png` (also) | the large logo in the home hero on wide screens (`.hero-logo`, lazy-loaded) |
+| `/icons/icon-512.png` (also) | the large logo in the home hero on wide screens: a CSS background on the empty `.hero-logo` span, set only in the 960px block of `styles.css`, so phones never download it |
 | `/img/logo-mark.png` | same, 128x128 PNG fallback; JSON-LD `logo` |
 | `/img/og-image.png` | 1200x630 social card; `og:image`, `twitter:image` (absolute https), JSON-LD `image` |
 | `/favicon.ico` | 16/32/48 multi-size; `<link rel="icon" href="/favicon.ico" sizes="any">` |
@@ -183,6 +183,14 @@ The public proxy sends `default-src 'self'; script-src 'self' 'unsafe-inline'; s
   IntersectionObserver exists and reduced motion is not requested) and `.is-in` to each `.reveal`
   as it comes into view. With no JavaScript nothing is hidden.
 - Everything that moves is switched off under `prefers-reduced-motion` (bottom of the file).
+- The hero logo and its rings are fully visible at rest: nothing in `.hero-visual` fades in, so a paused
+  or throttled animation never leaves the right half of the hero empty. Under reduced motion they stand
+  still.
+- Readability floor, checked by `site-tests/readability.test.mjs`: no `font-size` below 0.875rem (14px)
+  (`font-size: 0` only for a visually hidden label); body and description text 1rem or more with
+  line-height 1.5 or more; button labels 1rem and bold; buttons and other tap targets 44px or taller;
+  the key text colours at WCAG AA 4.5:1 on every surface they sit on (translucent surfaces composited
+  over `--bg`, gradients checked at every stop, including the dark label on the primary button).
 - Fonts: the system font stack (no font files; section 8).
 
 ## 12. Tests and CI
@@ -191,6 +199,7 @@ The public proxy sends `default-src 'self'; script-src 'self' 'unsafe-inline'; s
   manifest, icons, 404 (sections 7, 10). `site-tests/links.test.mjs`: every internal link resolves.
 - `.github/workflows/check.yml` runs the site tests and a smoke test that starts the pinned nginx image
   with `public/` and `nginx/conf.d/` and checks status codes, headers and the 404 page.
+- `site-tests/readability.test.mjs`: contrast, text sizes and tap targets read from `styles.css` (section 11).
 - `site-tests/assets.test.mjs`: every page loads the current `?v=` version of the stylesheet, the
   script and the icon sprite (section 12a).
 
