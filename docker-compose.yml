@@ -1,6 +1,9 @@
 # darkmatterits.com on the Pi (/data/sites/newsite, compose project "newsite").
-# Deployed by deploy/pi/deploy-darkmatterits, which checks this file with compose-guard:
-# published ports must be on 10.50.0.3 (WireGuard) or loopback, no host paths outside the project.
+# Deployed by deploy/pi/deploy-darkmatterits, which checks this file with the strict allowlist
+# deploy/pi/darkmatterits-compose-check (then compose-guard) before compose reads it. The allowlist
+# requires read_only, cap_drop ALL and no-new-privileges on every service, read-only ./src:/dst:ro
+# mounts only, env_file ./mailer/.env only, the pinned image, and the one port 10.50.0.3:8085:8080.
+# Changing any of that means changing the allowlist and its tests (deploy/pi/test/) on purpose.
 
 x-logging: &logging
   driver: json-file
