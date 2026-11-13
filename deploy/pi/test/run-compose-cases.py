@@ -16,6 +16,11 @@ Case files (first lines carry `# expect: ok` or `# expect: <text in the refusal>
                                           mailer/Dockerfile next to it
   dockerfile-cases/{good,bad}/*.Dockerfile  a mailer/Dockerfile; checked with the real
                                           docker-compose.yml next to it
+Dockerfile cases are read and written as raw BYTES, never decoded: several bad cases exist only
+because of one exact byte (a BOM, a no-break space after a backslash, a byte that is not UTF-8),
+and a text round-trip would change or reject them (D3-fix1). Their `# expect:` line is plain
+ASCII, so it is found by decoding the bytes as latin-1 (which can't fail). Those byte cases are
+marked -text in .gitattributes so git never rewrites them.
 Generated here (too big or too repetitive to commit): a file just over 64 KB, one exactly 64 KB,
 an alias bomb, and a file with exactly the 20 aliases allowed.
 
@@ -46,14 +51,28 @@ def read(path: str) -> str:
         return f.read()
 
 
-def run_case(check: str, compose_text: str, dockerfile_text: str) -> tuple[int, str, float]:
+def read_bytes(path: str) -> bytes:
+    """A Dockerfile case exactly as committed (see the module docstring for why bytes)."""
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def expect_of(data: bytes, name: str) -> str:
+    """The `# expect:` text of a case; latin-1 so a non-UTF-8 case can still carry its header."""
+    m = EXPECT_RE.search(data.decode("latin-1"))
+    if not m:
+        raise SystemExit(f"{name}: no '# expect:' line")
+    return m.group(1).strip()
+
+
+def run_case(check: str, compose_text: str, dockerfile_bytes: bytes) -> tuple[int, str, float]:
     """Run the checker on a temp project folder; return (exit code, combined output, seconds)."""
     with tempfile.TemporaryDirectory(prefix="D3-compose-case-") as tmp:
         os.makedirs(os.path.join(tmp, "mailer"))
         with open(os.path.join(tmp, "docker-compose.yml"), "w", encoding="utf-8", newline="\n") as f:
             f.write(compose_text)
-        with open(os.path.join(tmp, "mailer", "Dockerfile"), "w", encoding="utf-8", newline="\n") as f:
-            f.write(dockerfile_text)
+        with open(os.path.join(tmp, "mailer", "Dockerfile"), "wb") as f:   # exact bytes, no re-encoding
+            f.write(dockerfile_bytes)
         start = time.monotonic()
         try:
             p = subprocess.run([sys.executable, check, os.path.join(tmp, "docker-compose.yml")],
@@ -77,28 +96,28 @@ def verdict(name: str, expect: str, code: int, out: str, seconds: float) -> bool
     return good
 
 
-def file_cases() -> list[tuple[str, str, str, str]]:
-    """(name, expect, compose text, dockerfile text) for every committed case file."""
-    cases = [("real docker-compose.yml + mailer/Dockerfile", "ok", read(REAL_COMPOSE), read(REAL_DOCKERFILE))]
+def file_cases() -> list[tuple[str, str, str, bytes]]:
+    """(name, expect, compose text, dockerfile bytes) for every committed case file."""
+    cases = [("real docker-compose.yml + mailer/Dockerfile", "ok", read(REAL_COMPOSE), read_bytes(REAL_DOCKERFILE))]
     for kind in ("good", "bad"):
         folder = os.path.join(HERE, "compose-cases", kind)
         for fn in sorted(os.listdir(folder)):
             text = read(os.path.join(folder, fn))
-            cases.append((f"compose/{kind}/{fn}", EXPECT_RE.search(text).group(1).strip(), text, read(REAL_DOCKERFILE)))
+            cases.append((f"compose/{kind}/{fn}", EXPECT_RE.search(text).group(1).strip(), text, read_bytes(REAL_DOCKERFILE)))
         folder = os.path.join(HERE, "dockerfile-cases", kind)
         for fn in sorted(os.listdir(folder)):
-            text = read(os.path.join(folder, fn))
-            cases.append((f"dockerfile/{kind}/{fn}", EXPECT_RE.search(text).group(1).strip(), read(REAL_COMPOSE), text))
+            data = read_bytes(os.path.join(folder, fn))
+            cases.append((f"dockerfile/{kind}/{fn}", expect_of(data, fn), read(REAL_COMPOSE), data))
     for name, expect, _, _ in cases:   # a typo'd header must not turn a bad case into a good one
         if name.split("/")[1:2] == ["bad"] and expect == "ok":
             raise SystemExit(f"{name}: a bad case can't expect ok")
     return cases
 
 
-def generated_cases() -> list[tuple[str, str, str, str]]:
+def generated_cases() -> list[tuple[str, str, str, bytes]]:
     """Size and alias cases built from the real compose file."""
     real = read(REAL_COMPOSE)
-    dockerfile = read(REAL_DOCKERFILE)
+    dockerfile = read_bytes(REAL_DOCKERFILE)
     pad = MAX_BYTES - len(real.encode("utf-8")) - 1          # -1 for the newline after the padding
     exact = real + "#" * pad + "\n"
     assert len(exact.encode("utf-8")) == MAX_BYTES
