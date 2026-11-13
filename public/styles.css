@@ -1696,12 +1696,7 @@ select option {
   .section-head {
     margin-bottom: 22px;
   }
-  .info-grid {
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
-  }
   .info {
-    flex-direction: column;
     padding: 22px;
   }
   .split {
@@ -1785,6 +1780,14 @@ select option {
   }
   .other-list {
     grid-template-columns: repeat(4, 1fr);
+  }
+  /* The three home info blocks side by side, icon above the text. */
+  .info-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  .info {
+    flex-direction: column;
   }
   .tick-list {
     grid-template-columns: 1fr 1fr;
