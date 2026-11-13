@@ -27,6 +27,8 @@ Before touching it, know why each rule exists (audit 2026-11-13, task D3):
     --mount, parser directives or ONBUILD, so a build can't read other projects' local images
     from the Pi's shared image store (interim fix for the audit's MEDIUM; see DEPLOY.md and
     the D3 handoff for the dedicated-builder decision that is still open).
+    The Dockerfile must also be plain ASCII (no BOM, no Unicode spaces, no lone CR), so this
+    checker splits lines and continuations exactly as BuildKit does (D3-fix1).
 
 Usage: darkmatterits-compose-check <docker-compose.yml>   exit 0 = allowed, 1 = refused, 2 = usage
 """
@@ -59,6 +61,22 @@ SERVICE_KEYS = {"image", "container_name", "restart", "ports", "volumes", "read_
 # A Dockerfile parser directive (`# syntax=...`, `# escape=...`, `# check=...`) at the top of
 # the file. syntax= would pull an arbitrary frontend image; escape= changes how lines parse.
 DIRECTIVE_RE = re.compile(r"^#\s*[A-Za-z][A-Za-z0-9_-]*\s*=")
+# BuildKit's line-continuation rule with the default escape (an escape= directive is refused): a
+# backslash followed only by spaces/tabs to the end of the line. Python's \s or strip() would
+# also eat Unicode spaces, which BuildKit does not, hence the explicit [ \t] (D3-fix1).
+CONTINUED_RE = re.compile(r"\\[ \t]*$")
+# `\\` at the end of a line: whether BuildKit joins it depends on its exact regex (the D3
+# review read `([^\\])\\[ \t]*$`, which does NOT join it, while a plain `\\[ \t]*$` would).
+# Joining a line Docker doesn't join hides the next line from us, so refuse rather than guess.
+DOUBLE_BACKSLASH_RE = re.compile(r"\\\\[ \t]*$")
+
+
+def dockerfile_char_allowed(c: str) -> bool:
+    """True for printable ASCII, tab, CR and LF: the only characters a built Dockerfile may hold.
+
+    Anything else (BOM, no-break/em space, form feed, other controls) could make this checker
+    and BuildKit disagree about where a line or a continuation ends (D3-fix1)."""
+    return c in "\t\r\n" or " " <= c <= "~"
 
 
 class RefusedFile(Exception):
@@ -167,17 +185,45 @@ def check_dockerfile(path: str, where: str, bad: list[str]) -> None:
     One FROM, exactly a pinned base image; no `--from` (COPY/RUN from another image), no
     `--mount` (RUN --mount=from=<image>), no ONBUILD, no parser directives. Continuation lines
     are joined first so a flag can't hide on the next line. Fails closed: any doubt is refused.
+
+    The checker must split the file into instructions EXACTLY as BuildKit does, or a second
+    FROM can hide inside what the checker thinks is one instruction (review of D3, 2026-11-13).
+    So (D3-fix1): the file must be printable ASCII plus tab and CRLF/LF line ends (no BOM, no
+    Unicode spaces, no form feed: Python's strip()/splitlines() treat those as whitespace or
+    line breaks and BuildKit does not); lines are split only on LF, like Go's ScanLines; and a
+    line is continued only when it matches BuildKit's rule (see CONTINUED_RE). Input: the
+    Dockerfile path, a label for messages, the list refusals are appended to. Called by
+    check_service for each `build:` folder. Reads the file; no other side effects.
     """
     try:
-        with open(path, encoding="utf-8") as f:
-            raw = f.read(MAX_BYTES + 1)
+        with open(path, "rb") as f:          # bytes: the encoding checks below must see every byte
+            data = f.read(MAX_BYTES + 1)
     except OSError:
         bad.append(f"{where}: no readable Dockerfile")
         return
-    if len(raw) > MAX_BYTES:
+    if len(data) > MAX_BYTES:
         bad.append(f"{where}: Dockerfile is over {MAX_BYTES} bytes")
         return
-    lines = raw.splitlines()
+    # BuildKit drops a BOM before reading `# syntax=`, so a BOM would hide a directive from us.
+    if data.startswith(b"\xef\xbb\xbf"):
+        bad.append(f"{where}: Dockerfile starts with a UTF-8 byte-order mark (BOM); save it without one")
+        return
+    try:
+        raw = data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        bad.append(f"{where}: Dockerfile is not valid UTF-8 (byte {e.start})")
+        return
+    for number, line in enumerate(raw.split("\n"), 1):
+        odd = next((c for c in line if not dockerfile_char_allowed(c)), None)
+        if odd is not None:
+            bad.append(f"{where}: character U+{ord(odd):04X} on line {number} is not allowed "
+                       "(Dockerfiles must be printable ASCII, tab and line ends)")
+            return
+        if "\r" in line[:-1]:                # CR only as the CR of a CRLF line end
+            bad.append(f"{where}: carriage return not followed by a line feed on line {number}")
+            return
+    # Split like Go's bufio.ScanLines (what BuildKit uses): on LF only, dropping one trailing CR.
+    lines = [line[:-1] if line.endswith("\r") else line for line in raw.split("\n")]
     for line in lines:                       # directives may only appear before the first instruction
         if not line.strip():
             continue
@@ -193,8 +239,11 @@ def check_dockerfile(path: str, where: str, bad: list[str]) -> None:
             continue
         if stripped.startswith("#"):         # comment inside a continued instruction
             continue
-        if stripped.endswith("\\"):
-            current += stripped[:-1] + " "
+        if DOUBLE_BACKSLASH_RE.search(line):  # see DOUBLE_BACKSLASH_RE: refuse, don't guess
+            bad.append(f"{where}: a line ends in two backslashes ({stripped[:60]})")
+            continue
+        if CONTINUED_RE.search(line):
+            current += CONTINUED_RE.sub("", stripped) + " "
             continue
         instructions.append(current + stripped)
         current = ""
