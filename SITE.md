@@ -56,10 +56,18 @@ When you change one of these on one page, change it on all seven:
 - The `<head>` layout, in this order: charset, viewport, `<title>`, meta description, robots, canonical,
   `theme-color`; the icon and manifest links (section 7); Open Graph and Twitter tags (`og:site_name`,
   `og:type`, `og:locale`, `og:title`, `og:description`, `og:url`, `og:image` + width/height/alt,
-  `twitter:card`, `twitter:title`, `twitter:description`, `twitter:image`); `/styles.css`;
-  `<script src="/script.js" defer>`; then the JSON-LD blocks.
-- The site header: skip link to `#main`, the brand link, the main nav with the Services `<details>` menu
-  (works with no JavaScript; `script.js` only adds close-on-Escape and close-on-outside-click).
+  `twitter:card`, `twitter:title`, `twitter:description`, `twitter:image`); `/styles.css?v=...`;
+  `<script src="/script.js?v=..." defer>`; then the JSON-LD blocks. The `?v=` versions are written by
+  `site-tests/bump-asset-versions.mjs` (section 12a); never edit them by hand.
+- The site header (one row at every width): skip link to `#main`, the brand link (logo plus "Dark Matter"
+  over "IT Solutions"), then two navigations that hold the same links:
+  - `.site-nav` (960px and wider): the Services `<details class="nav-menu">` dropdown with an icon per
+    service, Contact, and the Call button.
+  - `.header-actions` (below 960px): a Call icon button (`tel:` link) and a labelled Menu button. The Menu
+    is `<details class="nav-menu nav-mobile">`; its panel lists the five services (icon, name, short
+    line), Contact and Call. Tapping the dimmed page behind it closes it.
+  Both menus are `<details>`, so they open and close with no JavaScript; `script.js` only adds
+  close-on-Escape and close-on-outside-click. The menu's short lines must stay true (section 4).
 - The site footer: the service-area line, the five service links, phone, email, the contact form link
   and the year (`.js-year`, filled in by `script.js`).
 - Titles are 65 characters or less and descriptions 160 or less (Google cuts longer ones). Every
@@ -100,6 +108,8 @@ tags or `<address>` markup. The business is listed as a service-area business on
 | Path | What |
 |---|---|
 | `/img/logo-mark.webp` | logo, 128x128 WebP (header/footer logo inside `<picture>`) |
+| `/img/icons.svg` | icon sprite drawn for this site: one `<symbol id="i-...">` per icon (services, phone, mail, pin, globe, user, tag, send, arrow). Pages use `<svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=...#i-name"></use></svg>`; strokes use `currentColor`. Versioned like the stylesheet (section 12a) |
+| `/icons/icon-512.png` (also) | the large logo in the home hero on wide screens (`.hero-logo`, lazy-loaded) |
 | `/img/logo-mark.png` | same, 128x128 PNG fallback; JSON-LD `logo` |
 | `/img/og-image.png` | 1200x630 social card; `og:image`, `twitter:image` (absolute https), JSON-LD `image` |
 | `/favicon.ico` | 16/32/48 multi-size; `<link rel="icon" href="/favicon.ico" sizes="any">` |
@@ -157,10 +167,23 @@ The public proxy sends `default-src 'self'; script-src 'self' 'unsafe-inline'; s
 - nginx sends these three files with a one-hour cache (`expires 1h`) and explicit content types.
 
 ## 11. Stylesheet notes (`public/styles.css`)
-- Dark theme: dark navy background with a violet-to-cyan accent and clear focus rings.
-- The header is sticky above 680px and static at 680px and below (a two-row header would cover too much
-  of a phone screen). Neither needs JavaScript.
+- Mobile first: the base rules are for phones; `min-width` media queries add 560px, 768px and 960px
+  layouts. Check every page at 375px, 768px and 1280px after a change.
+- Look: dark "deep space" theme taken from the logo (violet-to-blue glow on near-black). Tokens are at the
+  top of the file; `--grad` is the brand gradient used by primary buttons, gradient text and prices.
+- The header is one row and sticky at every width. Its frosted background is on `.site-header::before`,
+  not the header itself, because a `backdrop-filter` on the header would trap the fixed-position phone
+  menu panel inside the header box.
+- Home service cards: two columns on phones (icon, name, price and an arrow; the description and tag
+  show from 560px), the fifth card a full-width row; 3 + 2 on desktop. The whole card is the link
+  (`.card-link::after` is stretched over it).
+- Motion: slow nebula drift and star field on `html::before`/`html::after`, orbit rings in the home
+  hero, the logo floating in turning rings on wide screens, hero text rising in on load, hover and
+  press states, and scroll reveal: `script.js` adds `.js-reveal` to `<html>` (only when
+  IntersectionObserver exists and reduced motion is not requested) and `.is-in` to each `.reveal`
+  as it comes into view. With no JavaScript nothing is hidden.
 - Everything that moves is switched off under `prefers-reduced-motion` (bottom of the file).
+- Fonts: the system font stack (no font files; section 8).
 
 ## 12. Tests and CI
 - Run from the repo root: `node --test site-tests/*.test.mjs` (Node built-ins only, no package.json).
@@ -168,3 +191,15 @@ The public proxy sends `default-src 'self'; script-src 'self' 'unsafe-inline'; s
   manifest, icons, 404 (sections 7, 10). `site-tests/links.test.mjs`: every internal link resolves.
 - `.github/workflows/check.yml` runs the site tests and a smoke test that starts the pinned nginx image
   with `public/` and `nginx/conf.d/` and checks status codes, headers and the 404 page.
+- `site-tests/assets.test.mjs`: every page loads the current `?v=` version of the stylesheet, the
+  script and the icon sprite (section 12a).
+
+### 12a. Cache-busting asset versions
+Browsers (phones especially) keep `/styles.css` and `/script.js` for an hour and `/img/icons.svg` for 7
+days. New HTML with an old cached stylesheet looks broken, so every reference carries
+`?v=<first 10 hex of the SHA-256 of the file with LF line endings>`.
+- After changing `public/styles.css`, `public/script.js` or `public/img/icons.svg`, run from the repo
+  root: `node site-tests/bump-asset-versions.mjs`. It rewrites every reference in `public/**/*.html`.
+  `--check` changes nothing and exits 1 when a page is stale.
+- `site-tests/assets.test.mjs` fails when any version is missing or stale.
+- The link checker ignores query strings, so `/styles.css?v=...` still resolves to the file.

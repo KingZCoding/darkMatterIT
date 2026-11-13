@@ -212,11 +212,13 @@ test('404.html follows the 404 contract', () => {
   assert.doesNotMatch(body, /\son[a-z]+\s*=/i, 'inline event handler');
 
   for (const m of body.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
-    assert.match(m[1], /\ssrc="\/script\.js"/, 'only /script.js may be loaded');
+    // D1: the ?v= cache-busting version is allowed; site-tests/assets.test.mjs checks it is current.
+    assert.match(m[1], /\ssrc="\/script\.js(\?v=[0-9a-f]{10})?"/, 'only /script.js may be loaded');
     assert.equal(m[2].trim(), '', 'inline script');
   }
   const sheets = [...body.matchAll(/<link\b[^>]*rel="stylesheet"[^>]*>/gi)].map((m) => m[0]);
-  assert.deepEqual(sheets.map((s) => s.match(/href="([^"]*)"/)[1]), ['/styles.css']);
+  // D1: compared without the ?v= version, for the same reason.
+  assert.deepEqual(sheets.map((s) => s.match(/href="([^"?]*)(\?v=[0-9a-f]{10})?"/)[1]), ['/styles.css']);
   assert.doesNotMatch(body, /<style\b/i, 'inline <style> block');
 
   // Any quoting style, like the class check below (R2-fix1).
