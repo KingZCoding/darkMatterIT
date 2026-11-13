@@ -28,9 +28,17 @@ Before touching it, know why each rule exists (audit 2026-11-13, task D3):
     from the Pi's shared image store (interim fix for the audit's MEDIUM; see DEPLOY.md and
     the D3 handoff for the dedicated-builder decision that is still open).
     The Dockerfile must also be plain ASCII (no BOM, no Unicode spaces, no lone CR), so this
-    checker splits lines and continuations exactly as BuildKit does (D3-fix1).
+    checker splits lines and continuations exactly as BuildKit does (D3-fix1). Heredocs (`<<`),
+    `//` lines and quote/backslash tricks inside `--` flags are refused outright (D3-fix2).
+  * Exactly one service builds: darkmatter-mailer with `build: ./mailer` (a plain path string, so
+    compose reads ./mailer/Dockerfile and nothing else). This Dockerfile check is now the CI
+    layer: on the Pi the deploy ALSO refuses any mailer/Dockerfile that is not byte-identical to
+    the approved copy installed by install.sh (deploy-darkmatterits-dockerfile-check, D3-fix2,
+    Cody 2026-11-13 "Exact-match approved copy"), so a parser corner missed here can't deploy.
 
 Usage: darkmatterits-compose-check <docker-compose.yml>   exit 0 = allowed, 1 = refused, 2 = usage
+       darkmatterits-compose-check --dockerfile <path>    the Dockerfile rules alone (install.sh
+                                                          runs this on the copy it approves)
 """
 from __future__ import annotations
 
@@ -50,6 +58,9 @@ PINNED_IMAGES = {"nginxinc/nginx-unprivileged:1.27-alpine"}
 PORT_SERVICE = "darkmatter-site"            # the only service that may publish a port...
 PORTS = ["10.50.0.3:8085:8080"]             # ...and exactly this one (WireGuard address only)
 PINNED_BASE_IMAGES = {"node:24-alpine"}     # allowed `FROM` in a built Dockerfile
+BUILD_SERVICE = "darkmatter-mailer"         # the only service that may have `build:`...
+BUILD_DIR = "./mailer"                      # ...and exactly this plain folder (the Pi compares
+                                            # its Dockerfile to the approved copy, D3-fix2)
 
 PATH_RE = re.compile(r"^\./[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")      # ./relative, no ..
 CPATH_RE = re.compile(r"^/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")      # absolute path in container
@@ -60,14 +71,21 @@ SERVICE_KEYS = {"image", "container_name", "restart", "ports", "volumes", "read_
                 "environment"}
 # A Dockerfile parser directive (`# syntax=...`, `# escape=...`, `# check=...`) at the top of
 # the file. syntax= would pull an arbitrary frontend image; escape= changes how lines parse.
+# BuildKit's DetectSyntax also accepts `// syntax=...` (directives.go retries with a `//`
+# prefix); those are not matched here because ANY line starting with `//` is refused in
+# check_dockerfile (D3-fix2, review round 2 must-fix 3).
 DIRECTIVE_RE = re.compile(r"^#\s*[A-Za-z][A-Za-z0-9_-]*\s*=")
-# BuildKit's line-continuation rule with the default escape (an escape= directive is refused): a
-# backslash followed only by spaces/tabs to the end of the line. Python's \s or strip() would
-# also eat Unicode spaces, which BuildKit does not, hence the explicit [ \t] (D3-fix1).
+# Line continuation with the default escape (an escape= directive is refused). BuildKit's real
+# regex (parser.go, default escape) is `([^\\])\\[ \t]*$|^\\[ \t]*$`: a backslash that is not
+# itself preceded by a backslash, followed only by spaces/tabs to the end of the line; or a line
+# that is only a backslash. Ours is the simpler `\\[ \t]*$`; the two agree on every line that
+# reaches this test, because DOUBLE_BACKSLASH_RE has already refused lines ending in `\\`.
+# Python's \s or strip() would also eat Unicode spaces, which BuildKit does not, hence the
+# explicit [ \t] (D3-fix1; dockerfile_char_allowed refuses non-ASCII before this anyway).
 CONTINUED_RE = re.compile(r"\\[ \t]*$")
-# `\\` at the end of a line: whether BuildKit joins it depends on its exact regex (the D3
-# review read `([^\\])\\[ \t]*$`, which does NOT join it, while a plain `\\[ \t]*$` would).
-# Joining a line Docker doesn't join hides the next line from us, so refuse rather than guess.
+# `\\` at the end of a line: BuildKit's first branch `([^\\])\\[ \t]*$` does NOT join it, while
+# our simpler CONTINUED_RE would. Joining a line Docker doesn't join hides the next line from
+# us, so refuse rather than reconcile the two (the real Dockerfile has no such line).
 DOUBLE_BACKSLASH_RE = re.compile(r"\\\\[ \t]*$")
 
 
@@ -183,8 +201,11 @@ def check_dockerfile(path: str, where: str, bad: list[str]) -> None:
     """Allowlist a built Dockerfile so the build can't read other projects' local images.
 
     One FROM, exactly a pinned base image; no `--from` (COPY/RUN from another image), no
-    `--mount` (RUN --mount=from=<image>), no ONBUILD, no parser directives. Continuation lines
-    are joined first so a flag can't hide on the next line. Fails closed: any doubt is refused.
+    `--mount` (RUN --mount=from=<image>), no ONBUILD, no parser directives, no heredocs (`<<`),
+    no line starting with `//`; quotes and backslashes are deleted before the flag search
+    (D3-fix2). Continuation lines are joined first so a flag can't hide on the next line.
+    Fails closed: any doubt is refused. On the Pi this is a second layer: the deploy also
+    requires mailer/Dockerfile to be byte-identical to the approved copy (D3-fix2).
 
     The checker must split the file into instructions EXACTLY as BuildKit does, or a second
     FROM can hide inside what the checker thinks is one instruction (review of D3, 2026-11-13).
@@ -224,6 +245,17 @@ def check_dockerfile(path: str, where: str, bad: list[str]) -> None:
             return
     # Split like Go's bufio.ScanLines (what BuildKit uses): on LF only, dropping one trailing CR.
     lines = [line[:-1] if line.endswith("\r") else line for line in raw.split("\n")]
+    # D3-fix2 (review round 2): two BuildKit features this checker does not model are refused
+    # outright, on the raw lines, before any joining (over-refusing is fine; the real file has
+    # neither):
+    #   * heredocs (`<<`): BuildKit reads a heredoc body raw and ends it at its (unquoted) name,
+    #     so a name ending in a backslash made our continuation join swallow the next FROM;
+    #   * `//` lines: BuildKit accepts `// syntax=<image>` as a frontend directive.
+    for number, line in enumerate(lines, 1):
+        if "<<" in line:
+            bad.append(f"{where}: heredocs ('<<') are not allowed (line {number})")
+        if line.strip().startswith("//"):
+            bad.append(f"{where}: a line starting with '//' is not allowed (line {number})")
     for line in lines:                       # directives may only appear before the first instruction
         if not line.strip():
             continue
@@ -252,7 +284,10 @@ def check_dockerfile(path: str, where: str, bad: list[str]) -> None:
     froms = []
     for ins in instructions:
         word = ins.split(None, 1)[0].upper()
-        lowered = ins.lower()
+        # BuildKit's flag parser strips quotes and applies the escape inside a `--` word, so
+        # `--f"rom"`, `--fr\om` and `--mo'unt'` are real flags; delete those characters before
+        # looking for the flag names (D3-fix2; over-refuses a quoted literal, which is fine).
+        lowered = ins.lower().replace('"', "").replace("'", "").replace("\\", "")
         if "--from" in lowered:
             bad.append(f"{where}: '--from' is not allowed ({ins[:60]})")
         if "--mount" in lowered:
@@ -286,6 +321,10 @@ def check_service(name: Any, s: Any, names: set, project_dir: str, bad: list[str
     if "build" in s:
         if not rel_path(s["build"]):
             bad.append(f"{w}.build: must be a plain ./relative folder (no options)")
+        elif not (name == BUILD_SERVICE and s["build"] == BUILD_DIR):
+            # Only ./mailer/Dockerfile has an approved copy on the Pi (D3-fix2), so no other
+            # service and no other folder may build.
+            bad.append(f"{w}.build: only {BUILD_SERVICE} may build, and only from {BUILD_DIR}")
         else:
             check_dockerfile(os.path.join(project_dir, s["build"], "Dockerfile"), f"{w}.build Dockerfile", bad)
     if "container_name" in s and not (isinstance(s["container_name"], str) and NAME_RE.match(s["container_name"])
@@ -354,14 +393,27 @@ def check_compose(path: str) -> list[str]:
     project_dir = os.path.dirname(os.path.abspath(path))
     for name, s in services.items():
         check_service(name, s, set(services), project_dir, bad)
+    # Exactly one build, so the Pi's approved-copy comparison of ./mailer/Dockerfile covers
+    # every Dockerfile compose will build (D3-fix2).
+    builds = [n for n, s in services.items() if isinstance(s, dict) and "build" in s]
+    if builds != [BUILD_SERVICE]:
+        bad.append(f"services: exactly one service may build, {BUILD_SERVICE} (found {builds or 'none'})")
     return bad
 
 
-def main(path: str) -> int:
-    """CLI entry: print the verdict, return the exit code."""
-    bad = check_compose(path)
+def main(path: str, dockerfile_only: bool = False) -> int:
+    """CLI entry: print the verdict, return the exit code.
+
+    dockerfile_only: check `path` as a Dockerfile with check_dockerfile alone (install.sh uses
+    this to refuse approving a Dockerfile the rules reject, D3-fix2)."""
+    if dockerfile_only:
+        bad: list[str] = []
+        check_dockerfile(path, "Dockerfile", bad)
+    else:
+        bad = check_compose(path)
     if bad:
-        print("darkmatterits-compose-check: refusing this compose file:", file=sys.stderr)
+        what = "Dockerfile" if dockerfile_only else "compose file"
+        print(f"darkmatterits-compose-check: refusing this {what}:", file=sys.stderr)
         for b in bad:
             print(f"  - {b}", file=sys.stderr)
         return 1
@@ -370,7 +422,10 @@ def main(path: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("usage: darkmatterits-compose-check <docker-compose.yml>", file=sys.stderr)
-        sys.exit(2)
-    sys.exit(main(sys.argv[1]))
+    if len(sys.argv) == 2 and sys.argv[1] != "--dockerfile":
+        sys.exit(main(sys.argv[1]))
+    if len(sys.argv) == 3 and sys.argv[1] == "--dockerfile":
+        sys.exit(main(sys.argv[2], dockerfile_only=True))
+    print("usage: darkmatterits-compose-check <docker-compose.yml> | --dockerfile <Dockerfile>",
+          file=sys.stderr)
+    sys.exit(2)
