@@ -168,7 +168,14 @@ The public proxy sends `default-src 'self'; script-src 'self' 'unsafe-inline'; s
 
 ## 11. Stylesheet notes (`public/styles.css`)
 - Mobile first: the base rules are for phones; `min-width` media queries add 560px, 768px and 960px
-  layouts. Check every page at 375px, 768px and 1280px after a change.
+  layouts. Check every page at 320px, 360px, 375px, 414px, 768px and 1280px after a change, with the
+  phone menu closed and open.
+- Narrow phones: three `max-width` steps keep the phone layout tidy down to 320px. Under 480px the
+  menu's Contact and Call buttons stack, so the full phone number fits in its button. Under 400px the
+  header tightens its tracking and gaps. Under 375px the Menu button shows only its three bars; the word
+  "Menu" is in `<span class="menu-label">` and is clipped, not removed, so screen readers still read it.
+  The brand words never wrap, so keep at least 8px between them and the header buttons at every width
+  above (checked by eye; `site-tests/narrow-header.test.mjs` checks that the steps are still there).
 - Look: dark "deep space" theme taken from the logo (violet-to-blue glow on near-black). Tokens are at the
   top of the file; `--grad` is the brand gradient used by primary buttons, gradient text and prices.
 - The header is one row and sticky at every width. Its frosted background is on `.site-header::before`,
@@ -178,11 +185,14 @@ The public proxy sends `default-src 'self'; script-src 'self' 'unsafe-inline'; s
   show from 560px), the fifth card a full-width row; 3 + 2 on desktop. The whole card is the link
   (`.card-link::after` is stretched over it).
 - Motion: slow nebula drift and star field on `html::before`/`html::after`, orbit rings in the home
-  hero, the logo floating in turning rings on wide screens, hero text rising in on load, hover and
+  hero, the logo floating in turning rings on wide screens, hero text sliding up on load, hover and
   press states, and scroll reveal: `script.js` adds `.js-reveal` to `<html>` (only when
   IntersectionObserver exists and reduced motion is not requested) and `.is-in` to each `.reveal`
   as it comes into view. With no JavaScript nothing is hidden.
 - Everything that moves is switched off under `prefers-reduced-motion` (bottom of the file).
+- Entrance animations (hero text, service icon, phone menu, menu items, Services dropdown) move things
+  only and never fade them: no keyframe starts hidden, so text and menus are fully visible even when an
+  animation is paused, throttled or skipped. `site-tests/motion.test.mjs` checks this.
 - The hero logo and its rings are fully visible at rest: nothing in `.hero-visual` fades in, so a paused
   or throttled animation never leaves the right half of the hero empty. Under reduced motion they stand
   still.
@@ -200,6 +210,9 @@ The public proxy sends `default-src 'self'; script-src 'self' 'unsafe-inline'; s
 - `.github/workflows/check.yml` runs the site tests and a smoke test that starts the pinned nginx image
   with `public/` and `nginx/conf.d/` and checks status codes, headers and the 404 page.
 - `site-tests/readability.test.mjs`: contrast, text sizes and tap targets read from `styles.css` (section 11).
+- `site-tests/motion.test.mjs`: no `@keyframes` starts hidden, and the animated text and menu parts are
+  visible at rest (section 11).
+- `site-tests/narrow-header.test.mjs`: the narrow-phone steps and the `.menu-label` span (section 11).
 - `site-tests/assets.test.mjs`: every page loads the current `?v=` version of the stylesheet, the
   script and the icon sprite (section 12a).
 
