@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sitemap of darkmatterits.com. Maintainers: see SITE.md in the repository.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://darkmatterits.com/</loc></url>
+  <url><loc>https://darkmatterits.com/software-development/</loc></url>
+  <url><loc>https://darkmatterits.com/managed-hosting/</loc></url>
+  <url><loc>https://darkmatterits.com/networking-wifi/</loc></url>
+  <url><loc>https://darkmatterits.com/tech-support/</loc></url>
+  <url><loc>https://darkmatterits.com/hardware-pc-builds/</loc></url>
+  <url><loc>https://darkmatterits.com/contact/</loc></url>
+</urlset>

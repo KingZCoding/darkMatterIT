@@ -1,0 +1,13 @@
+{
+  "name": "Dark Matter IT Solutions",
+  "short_name": "Dark Matter IT",
+  "start_url": "/",
+  "scope": "/",
+  "display": "browser",
+  "background_color": "#070A12",
+  "theme_color": "#070A12",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

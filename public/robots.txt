@@ -1,0 +1,5 @@
+# robots.txt for darkmatterits.com. Every page is public. Maintainers: see SITE.md in the repository.
+User-agent: *
+Allow: /
+
+Sitemap: https://darkmatterits.com/sitemap.xml

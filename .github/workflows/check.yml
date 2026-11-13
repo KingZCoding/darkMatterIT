@@ -44,6 +44,10 @@ jobs:
           if [ -n "$(find public -name '*.sh' -o -name '.*' -not -name public)" ]; then
             echo "::error::Scripts or dotfiles in the web root"; exit 1
           fi
+      # Task R2: sitemap/robots/manifest/icons match the Batch R URL and image contract, and every
+      # internal link in public/ points at a file that exists (site-tests/, Node built-ins only).
+      - name: Site tests
+        run: node --test site-tests/*.test.mjs
       - name: No symlinks or submodules (the Pi refuses them)
         run: |
           if git ls-files -s | awk '$1 == "120000" || $1 == "160000" {f=1} END {exit !f}'; then
@@ -93,3 +97,86 @@ jobs:
             -v "$PWD/nginx/conf.d:/etc/nginx/conf.d:ro" \
             -v "$PWD/public:/usr/share/nginx/html:ro" \
             nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0 nginx -t
+      # Task R2: start the same pinned image the Pi runs, read-only like on the Pi, and check what nginx
+      # actually serves. The mailer is not started: /api/support is only checked for the GET refusal,
+      # which never reaches it.
+      # R2-fix1: the image is READ from docker-compose.yml (the nginxinc/nginx-unprivileged `image:` line)
+      # instead of being repeated here, so a digest bump done per DEPLOY.md "Updating base images" can
+      # never leave this test on an image the Pi no longer runs. Anything not pinned by @sha256: is
+      # refused, because a tag alone could silently test a different image than the Pi pulls.
+      - name: Served site smoke test
+        run: |
+          image=$(awk '$1 == "image:" && $2 ~ /^nginxinc\/nginx-unprivileged:/ {print $2; exit}' docker-compose.yml)
+          if [ -z "$image" ]; then
+            echo "::error::no nginxinc/nginx-unprivileged image: line found in docker-compose.yml"; exit 1
+          fi
+          case "$image" in
+            *@sha256:*) echo "smoke-testing $image (from docker-compose.yml)" ;;
+            *) echo "::error::nginx image in docker-compose.yml is not pinned by @sha256: ($image)"; exit 1 ;;
+          esac
+          docker run -d --name site-smoke -p 127.0.0.1:8080:8080 \
+            --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
+            -v "$PWD/nginx/conf.d:/etc/nginx/conf.d:ro" \
+            -v "$PWD/public:/usr/share/nginx/html:ro" \
+            "$image"
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:8080/ && break
+            sleep 1
+          done
+          fail=0
+          # check PATH STATUS [header-name expected-value] [body-substring]
+          # expected-value is a grep regex matched from the start of the header value; end it with
+          # [[:space:]]*$ to demand the whole value (header lines end in a carriage return, which [[:space:]] covers).
+          check() {
+            path=$1 want=$2
+            got=$(curl -sS --max-time 5 -D /tmp/h -o /tmp/b -w '%{http_code}' "http://127.0.0.1:8080$path")
+            if [ "$got" != "$want" ]; then
+              echo "::error::$path returned $got, expected $want"; fail=1; return
+            fi
+            bad=0
+            if [ -n "${3:-}" ] && ! grep -qi "^$3: *$4" /tmp/h; then
+              echo "::error::$path header $3 is '$(grep -i "^$3:" /tmp/h | tr -d '\r')', expected it to match '$4'"; bad=1
+            fi
+            if [ -n "${5:-}" ] && ! grep -q "$5" /tmp/b; then
+              echo "::error::$path body lacks '$5'"; bad=1
+            fi
+            if [ "$bad" = 0 ]; then echo "ok $path $got${3:+ $3}"; else fail=1; fi
+          }
+          check / 200
+          check /robots.txt 200 Content-Type text/plain 'Sitemap: https://darkmatterits.com/sitemap.xml'
+          check /sitemap.xml 200 Content-Type 'text/xml' '<urlset'
+          # R2-fix1: the short cache nginx sets for these three (`expires 1h` in nginx/conf.d/default.conf,
+          # which sends both Cache-Control: max-age=3600 and an Expires date). Separate calls because
+          # check() tests one header per request; Expires '' only proves the header is present.
+          # RA-fix: anchored at the end, so max-age=36000 or max-age=3600, private would fail.
+          for f in /sitemap.xml /robots.txt /site.webmanifest; do
+            check "$f" 200 Cache-Control 'max-age=3600[[:space:]]*$'
+            check "$f" 200 Expires ''
+          done
+          check /site.webmanifest 200 Content-Type 'application/manifest+json'
+          check /img/logo-mark.webp 200 Content-Type image/webp
+          # Missing pages, the deny rules and /api/ are real 404s that show the 404 page.
+          check /does-not-exist 404 Content-Type text/html dmits-404-page
+          check /404.html 404 Content-Type text/html dmits-404-page
+          check /deploy.sh 404 Content-Type text/html dmits-404-page
+          check /.env 404
+          check /api/health 404
+          # RA-fix: paths ending in .txt or .xml also match the xml/txt/webmanifest location. The dotfile
+          # deny rule comes first and must keep winning for the first two; the third has no file behind it.
+          # If someone reorders the location blocks, these catch it.
+          check /.git/config.txt 404
+          check /.env.xml 404
+          check /deploy.sh.txt 404
+          # A folder without its slash gets a RELATIVE redirect (absolute_redirect off). /img exists on
+          # every branch from R2 on, unlike the page folders, so it is the folder used here.
+          check /img 301 Location '/img/[[:space:]]*$'
+          # RA-fix: a page folder without its slash: exactly the relative /contact/, never http://host:8080/.
+          check /contact 301 Location '/contact/[[:space:]]*$'
+          # The contact-form route still refuses anything but POST before reaching the mailer.
+          check /api/support 403
+          exit $fail
+      - name: Stop the smoke-test container
+        if: always()
+        run: |
+          docker logs site-smoke 2>&1 | tail -n 40 || true
+          docker rm -f site-smoke >/dev/null 2>&1 || true
