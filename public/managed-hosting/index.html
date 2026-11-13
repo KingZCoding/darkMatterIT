@@ -135,27 +135,50 @@
           <img class="brand-logo" src="/img/logo-mark.png" width="40" height="40" alt="">
         </picture>
         <span class="brand-text">
-          <span class="brand-name">Dark Matter IT Solutions</span>
-          <span class="brand-sub">Gloucester &amp; Camden County, NJ · Remote support</span>
+          <span class="brand-name">Dark Matter</span>
+          <span class="brand-sub">IT Solutions</span>
         </span>
       </a>
 
-      <!-- Main navigation. The Services menu is a <details> element, so it opens and closes with no
-           JavaScript at any width; script.js only adds close-on-Escape and close-on-outside-click. -->
+      <!-- Wide screens: the main navigation in one row. The Services menu is a <details> element,
+           so it opens and closes with no JavaScript. -->
       <nav class="site-nav" aria-label="Main">
         <details class="nav-menu">
           <summary>Services</summary>
           <ul class="nav-dropdown">
-            <li><a href="/software-development/">Software Development</a></li>
-            <li><a href="/managed-hosting/" aria-current="page">Managed Hosting</a></li>
-            <li><a href="/networking-wifi/">Networking &amp; WiFi</a></li>
-            <li><a href="/tech-support/">Tech Support</a></li>
-            <li><a href="/hardware-pc-builds/">Hardware &amp; PC Builds</a></li>
+            <li><a href="/software-development/"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-code"></use></svg><span>Software Development</span></a></li>
+            <li><a href="/managed-hosting/" aria-current="page"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-server"></use></svg><span>Managed Hosting</span></a></li>
+            <li><a href="/networking-wifi/"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-wifi"></use></svg><span>Networking &amp; WiFi</span></a></li>
+            <li><a href="/tech-support/"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-support"></use></svg><span>Tech Support</span></a></li>
+            <li><a href="/hardware-pc-builds/"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-chip"></use></svg><span>Hardware &amp; PC Builds</span></a></li>
           </ul>
         </details>
         <a class="nav-link" href="/contact/">Contact</a>
-        <a class="btn btn-primary btn-small nav-call" href="tel:+18562103508">Call (856) 210-3508</a>
+        <a class="btn btn-primary btn-small nav-call" href="tel:+18562103508"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-phone"></use></svg>(856) 210-3508</a>
       </nav>
+
+      <!-- Phones and tablets: a call button and a Menu button. The menu is a <details> element too,
+           so it works with no JavaScript. -->
+      <div class="header-actions">
+        <a class="icon-btn" href="tel:+18562103508" aria-label="Call (856) 210-3508"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-phone"></use></svg></a>
+        <details class="nav-menu nav-mobile">
+          <summary class="menu-btn"><span class="menu-bars" aria-hidden="true"><span></span></span>Menu</summary>
+          <nav class="mobile-panel" aria-label="Main">
+            <p class="mobile-heading">Services</p>
+            <ul class="mobile-list">
+              <li><a href="/software-development/"><span class="mobile-icon"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-code"></use></svg></span><span class="mobile-text"><span class="mobile-name">Software Development</span><span class="mobile-meta">Websites, apps and automation</span></span></a></li>
+              <li><a href="/managed-hosting/" aria-current="page"><span class="mobile-icon"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-server"></use></svg></span><span class="mobile-text"><span class="mobile-name">Managed Hosting</span><span class="mobile-meta">$35/mo flat</span></span></a></li>
+              <li><a href="/networking-wifi/"><span class="mobile-icon"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-wifi"></use></svg></span><span class="mobile-text"><span class="mobile-name">Networking &amp; WiFi</span><span class="mobile-meta">Routers, mesh and office networks</span></span></a></li>
+              <li><a href="/tech-support/"><span class="mobile-icon"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-support"></use></svg></span><span class="mobile-text"><span class="mobile-name">Tech Support</span><span class="mobile-meta">Remote from $79</span></span></a></li>
+              <li><a href="/hardware-pc-builds/"><span class="mobile-icon"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-chip"></use></svg></span><span class="mobile-text"><span class="mobile-name">Hardware &amp; PC Builds</span><span class="mobile-meta">Custom builds and upgrades</span></span></a></li>
+            </ul>
+            <div class="mobile-cta">
+              <a class="btn" href="/contact/"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-send"></use></svg>Contact</a>
+              <a class="btn btn-primary" href="tel:+18562103508"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-phone"></use></svg>(856) 210-3508</a>
+            </div>
+          </nav>
+        </details>
+      </div>
     </div>
   </header>
 
@@ -170,18 +193,21 @@
     </div>
 
     <section class="hero hero-small">
-      <div class="container">
-        <h1>Managed website hosting</h1>
-        <p class="lead">One flat monthly price for your website’s hosting, SSL certificate and backups.</p>
-        <div class="actions">
-          <a class="btn btn-primary" href="/contact/">Send a request</a>
-          <a class="btn" href="tel:+18562103508">Call (856) 210-3508</a>
+      <div class="container service-hero">
+        <span class="service-icon" aria-hidden="true"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-server"></use></svg></span>
+        <div class="service-hero-copy">
+          <h1>Managed website hosting</h1>
+          <p class="lead">One flat monthly price for your website’s hosting, SSL certificate and backups.</p>
+          <div class="actions">
+            <a class="btn btn-primary" href="/contact/"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-send"></use></svg>Send a request</a>
+            <a class="btn btn-ghost" href="tel:+18562103508"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-phone"></use></svg>(856) 210-3508</a>
+          </div>
         </div>
       </div>
     </section>
 
     <section class="section" aria-labelledby="covers-title">
-      <div class="container split">
+      <div class="container split reveal">
         <div class="panel">
           <h2 id="covers-title">What this covers</h2>
           <ul class="tick-list">
@@ -206,14 +232,14 @@
 
     <section class="section" aria-labelledby="cta-title">
       <div class="container">
-        <div class="cta-band">
+        <div class="cta-band reveal">
           <div>
             <h2 id="cta-title">Ask about Managed Hosting</h2>
             <p>Send a short description and the best way to reach you.</p>
           </div>
           <div class="cta-actions">
-            <a class="btn btn-primary" href="/contact/">Send a request</a>
-            <a class="btn" href="tel:+18562103508">Call (856) 210-3508</a>
+            <a class="btn btn-primary" href="/contact/"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-send"></use></svg>Send a request</a>
+            <a class="btn btn-ghost" href="tel:+18562103508"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-phone"></use></svg>(856) 210-3508</a>
           </div>
         </div>
       </div>
@@ -221,12 +247,15 @@
 
     <section class="section section-tight" aria-labelledby="other-title">
       <div class="container">
-        <h2 id="other-title">Other services</h2>
-        <ul class="chip-list">
-          <li><a href="/software-development/">Software Development</a></li>
-          <li><a href="/networking-wifi/">Networking &amp; WiFi</a></li>
-          <li><a href="/tech-support/">Tech Support</a></li>
-          <li><a href="/hardware-pc-builds/">Hardware &amp; PC Builds</a></li>
+        <div class="other-head">
+          <h2 id="other-title">Other services</h2>
+          <a class="back-link" href="/#services">All services</a>
+        </div>
+        <ul class="other-list">
+          <li><a href="/software-development/"><span class="other-icon"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-code"></use></svg></span><span class="other-name">Software Development</span><svg class="icon other-arrow" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-arrow"></use></svg></a></li>
+          <li><a href="/networking-wifi/"><span class="other-icon"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-wifi"></use></svg></span><span class="other-name">Networking &amp; WiFi</span><svg class="icon other-arrow" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-arrow"></use></svg></a></li>
+          <li><a href="/tech-support/"><span class="other-icon"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-support"></use></svg></span><span class="other-name">Tech Support</span><svg class="icon other-arrow" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-arrow"></use></svg></a></li>
+          <li><a href="/hardware-pc-builds/"><span class="other-icon"><svg class="icon" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-chip"></use></svg></span><span class="other-name">Hardware &amp; PC Builds</span><svg class="icon other-arrow" aria-hidden="true" focusable="false"><use href="/img/icons.svg?v=0#i-arrow"></use></svg></a></li>
         </ul>
       </div>
     </section>
