@@ -1,50 +1,158 @@
 #!/usr/bin/env python3
-"""Strict allowlist for darkmatterits' docker-compose.yml. Runs as root on the Pi BEFORE docker
-compose ever reads the file (so no env_file, interpolation or build option is evaluated first),
-and in CI. Installed root-owned at /usr/local/sbin/darkmatterits-compose-check; the deploy uses
-that copy, never the one in the commit.
+"""Strict allowlist for darkmatterits' docker-compose.yml (and the Dockerfiles it builds).
+
+What it is for
+--------------
+Runs as root on the Pi BEFORE docker compose ever reads the file (so no env_file, interpolation
+or build option is evaluated first), and in CI. Installed root-owned at
+/usr/local/sbin/darkmatterits-compose-check; the deploy (deploy-darkmatterits) uses that copy,
+never the one in the commit, and runs it under `timeout 60`.
 
 It parses the YAML (so escapes like "\\x24" or quoted keys can't hide anything) and allows only
-the shapes this project uses. Anything else is refused; extend the allowlist here on purpose.
+the shapes this project uses. Anything else is refused; extend the allowlist here on purpose,
+then add a good and a bad case to deploy/pi/test/ and re-run the Pi install.
 
-Usage: darkmatterits-compose-check <docker-compose.yml>   exit 0 = allowed, 1 = refused
+Before touching it, know why each rule exists (audit 2026-11-13, task D3):
+  * Every volume is a read-only `./src:/dst:ro` bind, never the project root, .git or a .env
+    path, and every service is read_only + cap_drop ALL + no-new-privileges. A container that
+    could WRITE the project folder could swap a file for a symlink while the next deploy sits
+    between its checks and `docker compose up` (that was root on the Pi).
+  * env_file is only ./mailer/.env (the one secret file the Pi keeps).
+  * container_name, image and ports are pinned so this project can't claim another project's
+    container name, run another project's local image or grab another port.
+  * The parse refuses duplicate keys (compose's yaml.v3 refuses them too; we don't rely on
+    that), files over 64 KB, and more than MAX_ALIASES alias events (a "billion laughs" file
+    would otherwise keep this root process busy for minutes).
+  * Each `build:` folder's Dockerfile must have one FROM on a pinned list and no --from,
+    --mount, parser directives or ONBUILD, so a build can't read other projects' local images
+    from the Pi's shared image store (interim fix for the audit's MEDIUM; see DEPLOY.md and
+    the D3 handoff for the dedicated-builder decision that is still open).
+
+Usage: darkmatterits-compose-check <docker-compose.yml>   exit 0 = allowed, 1 = refused, 2 = usage
 """
+from __future__ import annotations
+
+import os
 import re
 import sys
+from typing import Any, Callable
 
 import yaml
 
+# --- Limits and pinned values (change on purpose, with a test case) -----------------------------
+MAX_BYTES = 64 * 1024          # the real file is ~1 KB; anything this big is not ours
+MAX_ALIASES = 20               # the real file uses 2 (*logging twice)
+ENV_FILE = "./mailer/.env"     # the only env_file allowed (kept on the Pi, never deployed)
+CONTAINER_PREFIX = "darkmatter-"
+PINNED_IMAGES = {"nginxinc/nginx-unprivileged:1.27-alpine"}
+PORT_SERVICE = "darkmatter-site"            # the only service that may publish a port...
+PORTS = ["10.50.0.3:8085:8080"]             # ...and exactly this one (WireGuard address only)
+PINNED_BASE_IMAGES = {"node:24-alpine"}     # allowed `FROM` in a built Dockerfile
+
 PATH_RE = re.compile(r"^\./[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")      # ./relative, no ..
 CPATH_RE = re.compile(r"^/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")      # absolute path in container
-PORT_RE = re.compile(r"^(10\.50\.0\.3|127\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d{1,5}:\d{1,5}$")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-IMAGE_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?(@sha256:[0-9a-f]{64})?$")
 RESTART = {"no", "always", "unless-stopped", "on-failure"}
 SERVICE_KEYS = {"image", "container_name", "restart", "ports", "volumes", "read_only", "tmpfs",
                 "cap_drop", "security_opt", "depends_on", "logging", "build", "env_file",
                 "environment"}
+# A Dockerfile parser directive (`# syntax=...`, `# escape=...`, `# check=...`) at the top of
+# the file. syntax= would pull an arbitrary frontend image; escape= changes how lines parse.
+DIRECTIVE_RE = re.compile(r"^#\s*[A-Za-z][A-Za-z0-9_-]*\s*=")
 
-bad = []
+
+class RefusedFile(Exception):
+    """The file can't even be parsed safely (too big, too many aliases, duplicate key, bad YAML)."""
 
 
-def no_dollar(node, where="root"):
+class UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that raises on a key repeated in one mapping.
+
+    PyYAML silently keeps the last value of a duplicate key; compose's yaml.v3 refuses the file.
+    Refusing here means the allowlist and compose can never disagree about which value counts.
+    Keys brought in by a `<<` merge may repeat explicit keys (YAML merge semantics: the explicit
+    key wins, the same in both parsers), so only the mapping's own keys are compared.
+    """
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
+        seen: set = set()
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue
+            key = self.construct_object(key_node, deep=False)
+            try:
+                duplicate = key in seen
+            except TypeError:  # unhashable key (a list or map used as a key)
+                raise RefusedFile(f"unhashable key at line {key_node.start_mark.line + 1}") from None
+            if duplicate:
+                raise RefusedFile(f"duplicate key '{key}' at line {key_node.start_mark.line + 1}")
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def load_compose(text: str) -> Any:
+    """Parse `text` safely. Raises RefusedFile on any parse problem.
+
+    The alias count is taken from the event stream BEFORE anything is constructed, so an alias
+    bomb is refused in milliseconds instead of being expanded.
+    """
+    aliases = 0
+    try:
+        for event in yaml.parse(text, Loader=yaml.SafeLoader):
+            if isinstance(event, yaml.AliasEvent):
+                aliases += 1
+                if aliases > MAX_ALIASES:
+                    raise RefusedFile(f"more than {MAX_ALIASES} YAML aliases")
+        return yaml.load(text, Loader=UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
+    except yaml.YAMLError as e:
+        raise RefusedFile(f"YAML error: {e}") from None
+    except RecursionError:  # absurdly deep nesting; ours is 4 levels
+        raise RefusedFile("YAML nested too deeply") from None
+
+
+def no_dollar(node: Any, where: str, bad: list[str]) -> None:
     """No string anywhere may contain $ (blocks all interpolation, however it is spelled)."""
     if isinstance(node, dict):
         for k, v in node.items():
-            no_dollar(k, where)
-            no_dollar(v, f"{where}.{k}")
+            no_dollar(k, where, bad)
+            no_dollar(v, f"{where}.{k}", bad)
     elif isinstance(node, list):
         for i, v in enumerate(node):
-            no_dollar(v, f"{where}[{i}]")
+            no_dollar(v, f"{where}[{i}]", bad)
     elif isinstance(node, str) and "$" in node:
         bad.append(f"{where}: '$' is not allowed")
 
 
-def rel_path(p):
-    return isinstance(p, str) and PATH_RE.match(p) and ".." not in p.split("/")
+def rel_path(p: Any) -> bool:
+    """A plain ./relative path inside the project, with no `..` part."""
+    return isinstance(p, str) and bool(PATH_RE.match(p)) and ".." not in p.split("/")
 
 
-def str_list(v, where, check):
+def mount_source_ok(src: str) -> bool:
+    """A bind-mount source: ./relative, and not the project root, .git or anything .env-like.
+
+    `./.` (or a `.` part anywhere) would mount the whole project; .git holds the folder's repo
+    config; a `.env*` part is a secret file, and rsync's `--exclude .env` would also keep a
+    planted `.env` entry alive across deploys.
+    """
+    if not rel_path(src) or src in ("./", "./."):
+        return False
+    for part in src.split("/")[1:]:
+        lowered = part.lower()   # case-folding filesystems must not slip past either
+        if part in (".", "..") or lowered == ".git" or lowered.startswith(".env"):
+            return False
+    return True
+
+
+def volume_ok(v: str) -> bool:
+    """Exactly `./src:/dst:ro`: read-only only, so no container can write the project folder."""
+    parts = v.split(":")
+    return (len(parts) == 3 and mount_source_ok(parts[0]) and bool(CPATH_RE.match(parts[1]))
+            and parts[2] == "ro")
+
+
+def str_list(v: Any, where: str, check: Callable[[str], Any], bad: list[str]) -> None:
+    """`v` must be a list of strings that each pass `check`; problems are appended to `bad`."""
     if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
         bad.append(f"{where}: must be a list of strings")
         return
@@ -53,75 +161,156 @@ def str_list(v, where, check):
             bad.append(f"{where}: '{x}' is not allowed")
 
 
-def main(path):
-    with open(path, encoding="utf-8") as f:
-        doc = yaml.safe_load(f)
-    if not isinstance(doc, dict):
-        print("darkmatterits-compose-check: not a mapping", file=sys.stderr)
-        return 1
-    no_dollar(doc)
+def check_dockerfile(path: str, where: str, bad: list[str]) -> None:
+    """Allowlist a built Dockerfile so the build can't read other projects' local images.
 
+    One FROM, exactly a pinned base image; no `--from` (COPY/RUN from another image), no
+    `--mount` (RUN --mount=from=<image>), no ONBUILD, no parser directives. Continuation lines
+    are joined first so a flag can't hide on the next line. Fails closed: any doubt is refused.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read(MAX_BYTES + 1)
+    except OSError:
+        bad.append(f"{where}: no readable Dockerfile")
+        return
+    if len(raw) > MAX_BYTES:
+        bad.append(f"{where}: Dockerfile is over {MAX_BYTES} bytes")
+        return
+    lines = raw.splitlines()
+    for line in lines:                       # directives may only appear before the first instruction
+        if not line.strip():
+            continue
+        if DIRECTIVE_RE.match(line.strip()):
+            bad.append(f"{where}: parser directive '{line.strip()}' is not allowed")
+        if not line.lstrip().startswith("#"):
+            break
+    instructions: list[str] = []
+    current = ""
+    for line in lines:
+        stripped = line.strip()
+        if not current and (not stripped or stripped.startswith("#")):
+            continue
+        if stripped.startswith("#"):         # comment inside a continued instruction
+            continue
+        if stripped.endswith("\\"):
+            current += stripped[:-1] + " "
+            continue
+        instructions.append(current + stripped)
+        current = ""
+    if current:
+        instructions.append(current)
+    froms = []
+    for ins in instructions:
+        word = ins.split(None, 1)[0].upper()
+        lowered = ins.lower()
+        if "--from" in lowered:
+            bad.append(f"{where}: '--from' is not allowed ({ins[:60]})")
+        if "--mount" in lowered:
+            bad.append(f"{where}: '--mount' is not allowed ({ins[:60]})")
+        if word == "ONBUILD":
+            bad.append(f"{where}: ONBUILD is not allowed")
+        if word == "FROM":
+            froms.append(ins.split()[1:])
+    if len(froms) != 1:
+        bad.append(f"{where}: needs exactly one FROM (found {len(froms)})")
+    elif len(froms[0]) != 1 or froms[0][0] not in PINNED_BASE_IMAGES:
+        # Exactly `FROM <pinned>`: no `AS stage`, no `--platform`, nothing else on the line.
+        bad.append(f"{where}: FROM {' '.join(froms[0])} is not on the pinned list {sorted(PINNED_BASE_IMAGES)}")
+
+
+def check_service(name: Any, s: Any, names: set, project_dir: str, bad: list[str]) -> None:
+    """Check one service against the allowlist; problems are appended to `bad`."""
+    w = f"services.{name}"
+    if not (isinstance(name, str) and NAME_RE.match(name)):
+        bad.append(f"{w}: bad service name")
+    if not isinstance(s, dict):
+        bad.append(f"{w}: must be a mapping")
+        return
+    for k in s:
+        if k not in SERVICE_KEYS:
+            bad.append(f"{w}.{k}: not allowed")
+    if ("image" in s) == ("build" in s):
+        bad.append(f"{w}: needs exactly one of image or build")
+    if "image" in s and not (isinstance(s["image"], str) and s["image"] in PINNED_IMAGES):
+        bad.append(f"{w}.image: '{s['image']}' is not on the pinned list {sorted(PINNED_IMAGES)}")
+    if "build" in s:
+        if not rel_path(s["build"]):
+            bad.append(f"{w}.build: must be a plain ./relative folder (no options)")
+        else:
+            check_dockerfile(os.path.join(project_dir, s["build"], "Dockerfile"), f"{w}.build Dockerfile", bad)
+    if "container_name" in s and not (isinstance(s["container_name"], str) and NAME_RE.match(s["container_name"])
+                                      and s["container_name"].startswith(CONTAINER_PREFIX)):
+        bad.append(f"{w}.container_name: must start with '{CONTAINER_PREFIX}'")
+    if "restart" in s and not (isinstance(s["restart"], str) and s["restart"] in RESTART):
+        bad.append(f"{w}.restart: bad value")
+    if "ports" in s and not (name == PORT_SERVICE and s["ports"] == PORTS):
+        bad.append(f"{w}.ports: only {PORT_SERVICE} may publish, and only {PORTS}")
+    if "volumes" in s:
+        str_list(s["volumes"], f"{w}.volumes", volume_ok, bad)
+    if "env_file" in s:
+        str_list(s["env_file"], f"{w}.env_file", lambda e: e == ENV_FILE, bad)
+    if "tmpfs" in s:
+        str_list(s["tmpfs"], f"{w}.tmpfs", CPATH_RE.match, bad)
+    # Required hardening (not just allowed): see the module docstring.
+    if s.get("read_only") is not True:
+        bad.append(f"{w}.read_only: must be true")
+    if s.get("cap_drop") != ["ALL"]:
+        bad.append(f"{w}.cap_drop: must be [ALL]")
+    if s.get("security_opt") != ["no-new-privileges:true"]:
+        bad.append(f"{w}.security_opt: must be [no-new-privileges:true]")
+    if "depends_on" in s:
+        str_list(s["depends_on"], f"{w}.depends_on", lambda d: d in names, bad)
+    if "environment" in s:
+        env = s["environment"]
+        if not isinstance(env, dict) or not all(
+                isinstance(k, str) and re.match(r"^[A-Z][A-Z0-9_]*$", k) and isinstance(v, (str, int, bool))
+                for k, v in env.items()):
+            bad.append(f"{w}.environment: must map NAME: value")
+    if "logging" in s:
+        lg = s["logging"]
+        if not (isinstance(lg, dict) and lg.get("driver") == "json-file" and set(lg) <= {"driver", "options"}
+                and set((lg.get("options") or {})) <= {"max-size", "max-file"}):
+            bad.append(f"{w}.logging: only json-file with max-size/max-file")
+
+
+def check_compose(path: str) -> list[str]:
+    """Return every reason `path` is refused (empty list = allowed).
+
+    Reads at most MAX_BYTES + 1 bytes, so a huge file costs nothing. Build folders are resolved
+    relative to the compose file's own folder (the root-only stage on the Pi, the repo in CI).
+    """
+    with open(path, "rb") as f:
+        data = f.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        return [f"file is over {MAX_BYTES} bytes"]
+    try:
+        doc = load_compose(data.decode("utf-8"))
+    except UnicodeDecodeError:
+        return ["file is not UTF-8"]
+    except RefusedFile as e:
+        return [str(e)]
+    if not isinstance(doc, dict):
+        return ["not a mapping"]
+
+    bad: list[str] = []
+    no_dollar(doc, "root", bad)
     for k in doc:
         if k != "services" and not (isinstance(k, str) and k.startswith("x-")):
             bad.append(f"top-level '{k}' is not allowed (only services and x-* anchors)")
-
     services = doc.get("services")
     if not isinstance(services, dict) or not services:
         bad.append("services: missing")
         services = {}
-    names = set(services)
+    project_dir = os.path.dirname(os.path.abspath(path))
     for name, s in services.items():
-        w = f"services.{name}"
-        if not (isinstance(name, str) and NAME_RE.match(name)):
-            bad.append(f"{w}: bad service name")
-        if not isinstance(s, dict):
-            bad.append(f"{w}: must be a mapping")
-            continue
-        for k in s:
-            if k not in SERVICE_KEYS:
-                bad.append(f"{w}.{k}: not allowed")
-        if ("image" in s) == ("build" in s):
-            bad.append(f"{w}: needs exactly one of image or build")
-        if "image" in s and not (isinstance(s["image"], str) and IMAGE_RE.match(s["image"])):
-            bad.append(f"{w}.image: bad image reference")
-        if "build" in s and not rel_path(s["build"]):
-            bad.append(f"{w}.build: must be a plain ./relative folder (no options)")
-        if "container_name" in s and not (isinstance(s["container_name"], str) and NAME_RE.match(s["container_name"])):
-            bad.append(f"{w}.container_name: bad name")
-        if "restart" in s and s["restart"] not in RESTART:
-            bad.append(f"{w}.restart: bad value")
-        if "ports" in s:
-            str_list(s["ports"], f"{w}.ports", PORT_RE.match)
-        if "volumes" in s:
-            def vol_ok(v):
-                parts = v.split(":")
-                return (len(parts) in (2, 3) and rel_path(parts[0]) and CPATH_RE.match(parts[1])
-                        and (len(parts) == 2 or parts[2] == "ro"))
-            str_list(s["volumes"], f"{w}.volumes", vol_ok)
-        if "env_file" in s:
-            str_list(s["env_file"], f"{w}.env_file", rel_path)
-        if "tmpfs" in s:
-            str_list(s["tmpfs"], f"{w}.tmpfs", CPATH_RE.match)
-        if "cap_drop" in s:
-            str_list(s["cap_drop"], f"{w}.cap_drop", lambda c: c == "ALL" or re.match(r"^[A-Z_]+$", c))
-        if "security_opt" in s:
-            str_list(s["security_opt"], f"{w}.security_opt", lambda o: o == "no-new-privileges:true")
-        if "depends_on" in s:
-            str_list(s["depends_on"], f"{w}.depends_on", lambda d: d in names)
-        if "read_only" in s and not isinstance(s["read_only"], bool):
-            bad.append(f"{w}.read_only: must be true/false")
-        if "environment" in s:
-            env = s["environment"]
-            if not isinstance(env, dict) or not all(
-                    isinstance(k, str) and re.match(r"^[A-Z][A-Z0-9_]*$", k) and isinstance(v, (str, int, bool))
-                    for k, v in env.items()):
-                bad.append(f"{w}.environment: must map NAME: value")
-        if "logging" in s:
-            lg = s["logging"]
-            if not (isinstance(lg, dict) and lg.get("driver") == "json-file" and set(lg) <= {"driver", "options"}
-                    and set((lg.get("options") or {})) <= {"max-size", "max-file"}):
-                bad.append(f"{w}.logging: only json-file with max-size/max-file")
+        check_service(name, s, set(services), project_dir, bad)
+    return bad
 
+
+def main(path: str) -> int:
+    """CLI entry: print the verdict, return the exit code."""
+    bad = check_compose(path)
     if bad:
         print("darkmatterits-compose-check: refusing this compose file:", file=sys.stderr)
         for b in bad:
