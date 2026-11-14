@@ -66,6 +66,7 @@ jobs:
           bash -n deploy/pi/install.sh
           bash -n deploy/pi/test/test-preup-check.sh
           bash -n deploy/pi/test/test-dockerfile-approved.sh
+          bash -n deploy/pi/test/test-site-name.sh
           systemd-analyze verify deploy/pi/deploy-darkmatterits.timer || true
       - name: Compose allowlist (same check the Pi runs before compose reads the file)
         run: |
@@ -87,6 +88,10 @@ jobs:
         env:
           REQUIRE_SYMLINKS: "1"
         run: bash deploy/pi/test/test-dockerfile-approved.sh
+      # Task R1: the Pi folder and compose project are darkmatterits (renamed 2026-11-13) in the
+      # deploy script, install.sh and the compose header, and the old name appears only as dated history.
+      - name: Site name tests
+        run: bash deploy/pi/test/test-site-name.sh
       - name: Compose file check
         run: |
           touch mailer/.env
