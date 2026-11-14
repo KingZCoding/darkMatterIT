@@ -31,8 +31,12 @@ WORKFLOW_PATH=.github/workflows/check.yml
 STATE=/var/lib/deploy-darkmatterits
 GIT_DIR=$STATE/repo.git
 STAGE=$STATE/stage
-DEST=/data/sites/newsite
-PROJECT=newsite
+# Site folder and compose project name. Both were "newsite" until 2026-11-13 (task R1, Cody "Full rename");
+# the Pi moved over with ops pi/rename-darkmatterits/. The containers keep their fixed container_name
+# (darkmatter-site, darkmatter-mailer) from docker-compose.yml; only the folder, project label and
+# compose network (darkmatterits_default) carry this name.
+DEST=/data/sites/darkmatterits
+PROJECT=darkmatterits
 # The one approved mailer Dockerfile (D3-fix2, Cody 2026-11-13 "Exact-match approved copy").
 # Installed root-owned (644) by install.sh; in /usr/local/sbin so secwatch's existing watch on
 # /usr/local/sbin/* reports any change made outside install.sh. A constant on purpose: nothing

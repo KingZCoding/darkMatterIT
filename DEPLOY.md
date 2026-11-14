@@ -9,10 +9,15 @@ browser ──HTTPS──▶ VPS nginx (TLS, security headers, CSP)
                                           └── /api/support only ──▶ darkmatter-mailer (Node, port 3000, internal only)
 ```
 
-On the Pi the project lives in `/data/sites/newsite` (compose project name `newsite`).
-The mailer's settings are in `/data/sites/newsite/mailer/.env` on the Pi only; it is never committed
+On the Pi the project lives in `/data/sites/darkmatterits` (compose project name `darkmatterits`).
+The mailer's settings are in `/data/sites/darkmatterits/mailer/.env` on the Pi only; it is never committed
 and a deploy never overwrites it. Variables are listed in `mailer/.env.example`: `SUPPORT_TO`, `FROM_EMAIL`,
 `SMTP_USER`, `SMTP_PASS`, optional `PORT`, `SMTP_HOST`, `SMTP_PORT`, `SUPPORT_DAILY_CAP` (100), `CONFIRM_DAILY_CAP` (50).
+
+Both names were `newsite` until 2026-11-13 (task R1, Cody: "Full rename"). The Pi was moved over once by the ops
+workspace's `pi/rename-darkmatterits/` cutover script (folder renamed in place, project brought down under its old name
+and up again as `darkmatterits`, about a minute of downtime); the containers kept their fixed names
+`darkmatter-site` and `darkmatter-mailer`. `deploy/pi/test/test-site-name.sh` keeps this repo on the new name.
 
 ## How a deploy happens
 
@@ -32,9 +37,9 @@ The Pi **pulls**; GitHub never reaches the Pi.
      then runs `compose-guard`;
    - refuses the commit unless its `mailer/Dockerfile` is **byte-identical** to the approved copy on the Pi
      (`/usr/local/sbin/darkmatterits-mailer.Dockerfile`, see "Changing the mailer Dockerfile" below);
-   - copies it into `/data/sites/newsite` with fixed modes (dirs 755, files 644, owner admin), keeping `mailer/.env`;
+   - copies it into `/data/sites/darkmatterits` with fixed modes (dirs 755, files 644, owner admin), keeping `mailer/.env`;
    - right before compose runs, `/usr/local/sbin/deploy-darkmatterits-preup-check` refuses any symlink in
-     `/data/sites/newsite` (outside its `.git`), a `.env` at its root (compose would read `COMPOSE_*` settings
+     `/data/sites/darkmatterits` (outside its `.git`), a `.env` at its root (compose would read `COMPOSE_*` settings
      from it; `mailer/.env` is the only `.env`), or a `docker-compose.yml` that differs from the checked copy,
      and `mailer/Dockerfile` is compared with the approved copy once more;
    - rebuilds with `docker compose up -d --build --force-recreate`, waits for the mailer's healthcheck,
@@ -188,5 +193,6 @@ running site:
 ## Old method (removed)
 
 The old workflow SSHed GitHub → VPS → "gateway" → "worker" and ran `deploy.sh` from
-`/data/sites/newsite/public`. That path never existed on the Pi and every run since March 2026 failed.
+`/data/sites/newsite/public` (the site folder was called newsite until 2026-11-13). That path never existed
+on the Pi and every run since March 2026 failed.
 The repo secrets `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` are no longer used and can be deleted.

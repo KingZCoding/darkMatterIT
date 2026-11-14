@@ -1,4 +1,5 @@
-# darkmatterits.com on the Pi (/data/sites/newsite, compose project "newsite").
+# darkmatterits.com on the Pi (/data/sites/darkmatterits, compose project "darkmatterits"; both were
+# "newsite" until 2026-11-13, task R1).
 # Deployed by deploy/pi/deploy-darkmatterits, which checks this file with the strict allowlist
 # deploy/pi/darkmatterits-compose-check (then compose-guard) before compose reads it. The allowlist
 # requires read_only, cap_drop ALL and no-new-privileges on every service, read-only ./src:/dst:ro

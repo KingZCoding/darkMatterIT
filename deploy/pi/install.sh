@@ -33,7 +33,8 @@ done
 for b in docker git rsync curl python3 flock timeout cmp find sha256sum; do command -v "$b" >/dev/null || { echo "missing $b" >&2; exit 1; }; done
 python3 -I -c 'import yaml' || { echo "missing python3-yaml" >&2; exit 1; }
 [ -x /usr/local/sbin/compose-guard ] || { echo "missing /usr/local/sbin/compose-guard" >&2; exit 1; }
-[ -f /data/sites/newsite/mailer/.env ] || { echo "missing /data/sites/newsite/mailer/.env" >&2; exit 1; }
+# The site folder must match DEST in deploy-darkmatterits (task R1: it was /data/sites/newsite until 2026-11-13).
+[ -f /data/sites/darkmatterits/mailer/.env ] || { echo "missing /data/sites/darkmatterits/mailer/.env" >&2; exit 1; }
 
 # Check everything before touching the system, so a bad file can't leave a half-install.
 # CRLF -> LF for the scripts only. The Dockerfile is approved byte-for-byte as copied, never
